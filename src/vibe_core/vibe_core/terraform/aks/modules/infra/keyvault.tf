@@ -13,8 +13,6 @@ locals {
 }
 
 resource "null_resource" "keyvault" {
-  name = "${local.keyvault_name}"
-
   provisioner "local-exec" {
     command = <<-EOT
               az keyvault create --name ${local.keyvault_name} --resource-group ${var.resource_group_name} --location ${var.location} --enabled-for-disk-encryption true --tenant-id ${var.tenantId} --soft-delete-retention-days 7 --purge-protection-enabled false --enable-purge-protection --network-acls '${local.network_acl}' --sku standard

@@ -29,7 +29,8 @@ output "public_ip_dns" {
 }
 
 output "keyvault_name" {
-  value = null_resource.keyvault.name
+  value = "${var.prefix}-kv-${random_string.name_suffix.result}"
+
 }
 
 output "application_id" {
