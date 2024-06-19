@@ -15,7 +15,7 @@ locals {
 resource "null_resource" "keyvault" {
   provisioner "local-exec" {
     command = <<-EOT
-              az keyvault create --name ${local.keyvault_name} --resource-group ${var.resource_group_name} --location ${var.location} --enabled-for-disk-encryption true --network-acls '${local.network_acl}' --sku standard || exit 1
+              az keyvault create --name ${local.keyvault_name} --resource-group ${var.resource_group_name} --location ${var.location} --enabled-for-disk-encryption true --network-acls '${local.network_acl}' --sku standard --enable-rbac-authorization false || exit 1
               sleep 10
               az keyvault set-policy --name ${local.keyvault_name} --object-id ${data.azurerm_user_assigned_identity.kubernetesidentity.principal_id} --key-permissions get list --secret-permissions get list || exit 1
               sleep 10
