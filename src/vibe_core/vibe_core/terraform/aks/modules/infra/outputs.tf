@@ -29,7 +29,7 @@ output "public_ip_dns" {
 }
 
 output "keyvault_name" {
-  value = azurerm_key_vault.keyvault.name
+  value = null_resource.keyvault.name
 }
 
 output "application_id" {
