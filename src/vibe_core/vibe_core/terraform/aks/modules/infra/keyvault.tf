@@ -31,7 +31,7 @@ EOT
 }
 
 resource "null_resource" "cosmosdbsecret" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_sql_database.cosmosdb]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_sql_database.cosmosdb]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name cosmos-db-database --value ${azurerm_cosmosdb_sql_database.cosmosdb.name}"
@@ -40,7 +40,7 @@ resource "null_resource" "cosmosdbsecret" {
 }
 
 resource "null_resource" "cosmoscollectionsecret" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_sql_container.workflows]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_sql_container.workflows]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name cosmos-db-collection --value ${azurerm_cosmosdb_sql_container.workflows.name}"
@@ -49,7 +49,7 @@ resource "null_resource" "cosmoscollectionsecret" {
 }
 
 resource "null_resource" "cosmosdbkey" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_account.cosmos]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_account.cosmos]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name cosmos-db-key --value ${azurerm_cosmosdb_account.cosmos.primary_key}"
@@ -58,7 +58,7 @@ resource "null_resource" "cosmosdbkey" {
 }
 
 resource "null_resource" "cosmosdburl" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_account.cosmos]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_account.cosmos]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name cosmos-db-url --value ${azurerm_cosmosdb_account.cosmos.endpoint}"
@@ -67,7 +67,7 @@ resource "null_resource" "cosmosdburl" {
 }
 
 resource "null_resource" "storageconnectionstring" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_storage_account.storageaccount]
+  depends_on   = [null_resource.keyvault, azurerm_storage_account.storageaccount]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name storage-account-connection-string --value ${azurerm_storage_account.storageaccount.primary_connection_string}"
@@ -76,7 +76,7 @@ resource "null_resource" "storageconnectionstring" {
 }
 
 resource "null_resource" "staccosmosuri" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_account.staccosmos]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_account.staccosmos]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name stac-cosmos-db-url --value ${azurerm_cosmosdb_account.staccosmos.endpoint}"
@@ -85,7 +85,7 @@ resource "null_resource" "staccosmosuri" {
 }
 
 resource "null_resource" "staccosmoskeysecret" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_account.staccosmos]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_account.staccosmos]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name stac-cosmos-write-key --value ${azurerm_cosmosdb_account.staccosmos.primary_key}"
@@ -94,7 +94,7 @@ resource "null_resource" "staccosmoskeysecret" {
 }
 
 resource "null_resource" "staccosmosdbname" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_sql_database.cosmosstacdb]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_sql_database.cosmosstacdb]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name stac-cosmos-db-name --value ${azurerm_cosmosdb_sql_database.cosmosstacdb.name}"
@@ -103,7 +103,7 @@ resource "null_resource" "staccosmosdbname" {
 }
 
 resource "null_resource" "staccosmoscontainer" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_sql_container.staccontainer]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_sql_container.staccontainer]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name stac-cosmos-container-name --value ${azurerm_cosmosdb_sql_container.staccontainer.name}"
@@ -112,7 +112,7 @@ resource "null_resource" "staccosmoscontainer" {
 }
 
 resource "null_resource" "staccosmosassetscontainer" {
-  depends_on   = [azurerm_key_vault.keyvault, azurerm_cosmosdb_sql_container.stacassetscontainer]
+  depends_on   = [null_resource.keyvault, azurerm_cosmosdb_sql_container.stacassetscontainer]
 
   provisioner "local-exec" {
     command = "az keyvault secret set --vault-name ${local.keyvault_name} --name stac-cosmos-assets-container-name --value ${azurerm_cosmosdb_sql_container.stacassetscontainer.name}"
