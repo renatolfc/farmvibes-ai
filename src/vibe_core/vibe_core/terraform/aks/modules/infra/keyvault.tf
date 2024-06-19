@@ -27,11 +27,6 @@ EOT
     when    = create
   }
 
-  provisioner "local-exec" {
-    when    = destroy
-    command = "az keyvault delete --name ${var.prefix}-kv-${resource.random_string.name_suffix.result} --resource-group ${var.resource_group_name}"
-  }
-}
   depends_on = [data.azurerm_resource_group.resourcegroup, data.http.ip, data.azurerm_user_assigned_identity.kubernetesidentity]
 }
 
