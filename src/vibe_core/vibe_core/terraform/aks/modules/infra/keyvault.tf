@@ -16,11 +16,11 @@ resource "null_resource" "keyvault" {
   provisioner "local-exec" {
     command = <<-EOT
               az keyvault create --name ${local.keyvault_name} --resource-group ${var.resource_group_name} --location ${var.location} --enabled-for-disk-encryption true --network-acls '${local.network_acl}' --sku standard || exit 1
-              sleep 30
+              sleep 10
               az keyvault set-policy --name ${local.keyvault_name} --object-id ${data.azurerm_user_assigned_identity.kubernetesidentity.principal_id} --key-permissions get list --secret-permissions get list || exit 1
-              sleep 30
+              sleep 10
               az keyvault set-policy --name ${local.keyvault_name} --object-id ${data.azurerm_client_config.current.object_id} --key-permissions create get --secret-permissions get backup delete list purge recover restore set || exit 1
-              sleep 30
+              sleep 10
 EOT
     when    = create
   }
