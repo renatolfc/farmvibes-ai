@@ -102,6 +102,17 @@ resource "kubernetes_stateful_set" "redis" {
             }
           }
 
+          env {
+            name = "REDISCLI_AUTH"
+
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.redis.metadata[0].name
+                key  = "redis-password"
+              }
+            }
+          }
+
           port {
             name           = "redis"
             container_port = 6379
@@ -127,8 +138,8 @@ resource "kubernetes_stateful_set" "redis" {
             period_seconds    = 5
             timeout_seconds   = 2
 
-            tcp_socket {
-              port = 6379
+            exec {
+              command = ["sh", "-c", "test \"$(redis-cli ping)\" = PONG"]
             }
           }
 

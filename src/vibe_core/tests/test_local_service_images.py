@@ -1,6 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import os
+import socket
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -317,6 +320,16 @@ def test_native_terraform_preserves_service_contracts():
     assert "image             = var.redis_image" in redis
     assert 'mount_path = "/data"' in redis
     assert 'image_pull_secrets {\n          name = "acrtoken"\n        }' in redis
+    assert (
+        'name = "REDISCLI_AUTH"\n\n'
+        "            value_from {\n"
+        "              secret_key_ref {\n"
+        "                name = kubernetes_secret.redis.metadata[0].name\n"
+        '                key  = "redis-password"'
+    ) in redis
+    readiness = redis.split("readiness_probe {", 1)[1].split("liveness_probe {", 1)[0]
+    assert 'command = ["sh", "-c", "test \\"$(redis-cli ping)\\" = PONG"]' in readiness
+    assert "tcp_socket" not in readiness
     assert 'name      = "rabbitmq"' in rabbitmq
     assert "rabbitmq-password" in rabbitmq
     assert "image             = var.rabbitmq_image" in rabbitmq
@@ -337,3 +350,59 @@ def test_native_terraform_preserves_service_contracts():
     assert dapr.count("DaprBuiltInInitializationRetries:") == 2
     assert "maxRetries: 15\n      targets: {}" in dapr
     assert "kubectl_manifest.cache-initialization-resiliency" in outputs
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected_ready"),
+    [
+        (b"-LOADING Redis is loading the dataset in memory\r\n", False),
+        (b"+PONG\r\n", True),
+    ],
+)
+def test_redis_readiness_requires_pong(tmp_path: Path, reply: bytes, expected_ready: bool):
+    redis_cli = tmp_path / "redis-cli"
+    redis_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import socket\n"
+        "import sys\n"
+        'assert os.environ["REDISCLI_AUTH"] == "probe-secret"\n'
+        'assert sys.argv[1:] == ["ping"]\n'
+        'with socket.create_connection(("127.0.0.1", '
+        'int(os.environ["FAKE_REDIS_PORT"]))) as client:\n'
+        '    client.sendall(b"PING")\n'
+        "    reply = client.recv(4096).decode().strip()\n"
+        'print(reply[1:] if reply[:1] in "+-" else reply)\n'
+    )
+    redis_cli.chmod(0o755)
+
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(5)
+        env = {
+            **os.environ,
+            "FAKE_REDIS_PORT": str(server.getsockname()[1]),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "REDISCLI_AUTH": "probe-secret",
+        }
+        probe_command = ["sh", "-c", 'test "$(redis-cli ping)" = PONG']
+        assert "probe-secret" not in " ".join(probe_command)
+        process = subprocess.Popen(
+            probe_command,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            connection, _ = server.accept()
+            with connection:
+                assert connection.recv(4) == b"PING"
+                connection.sendall(reply)
+            stdout, stderr = process.communicate(timeout=5)
+        finally:
+            if process.poll() is None:
+                process.kill()
+    assert (process.returncode == 0) is expected_ready
+    assert stdout == stderr == ""
