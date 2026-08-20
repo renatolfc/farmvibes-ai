@@ -13,9 +13,9 @@ from fastapi.testclient import TestClient
 from shapely.geometry import Polygon
 
 from vibe_common.statestore import StateStore
-from vibe_core.client import FarmvibesAiClient
+from vibe_core.client import FarmvibesAiClient, VibeWorkflowRun
 from vibe_core.data import ADMAgSeasonalFieldInput
-from vibe_core.datamodel import RunDetails
+from vibe_core.datamodel import RunDetails, RunStatus
 from vibe_server.href_handler import LocalHrefHandler
 from vibe_server.orchestrator import WorkflowStateUpdate
 from vibe_server.server import TerravibesAPI, TerravibesProvider
@@ -67,6 +67,60 @@ async def test_list_workflows(
 def test_empty_list_runs(_, rest_client: FarmvibesAiClient):
     runs = rest_client.list_runs()
     assert not runs
+
+
+def test_delete_polling_treats_missing_after_accepted_request_as_deleted():
+    client = MagicMock(spec=FarmvibesAiClient)
+    client.delete_run.return_value = "accepted"
+    client.list_runs.return_value = []
+    run = VibeWorkflowRun("run-id", "run", "workflow", {}, client)
+
+    run.delete().block_until_deleted(0)
+
+    assert run.status == RunStatus.deleted
+    client.delete_run.assert_called_once_with("run-id")
+
+
+def test_delete_polling_handles_normal_deleting_then_deleted_status():
+    client = MagicMock(spec=FarmvibesAiClient)
+    client.delete_run.return_value = "accepted"
+    client.list_runs.side_effect = [
+        [{"details.status": RunStatus.deleting}],
+        [{"details.status": RunStatus.deleted}],
+    ]
+    run = VibeWorkflowRun("run-id", "run", "workflow", {}, client)
+    run.wait_s = 0
+
+    run.delete().block_until_deleted(1)
+
+    assert run.status == RunStatus.deleted
+    assert client.list_runs.call_count == 2
+
+
+def test_missing_run_without_accepted_delete_is_not_treated_as_deleted():
+    client = MagicMock(spec=FarmvibesAiClient)
+    client.list_runs.return_value = []
+    run = VibeWorkflowRun("missing", "run", "workflow", {}, client)
+
+    with pytest.raises(IndexError):
+        _ = run.status
+
+    client.delete_run.side_effect = RuntimeError("404 not found")
+    with pytest.raises(RuntimeError, match="404"):
+        run.delete()
+    with pytest.raises(IndexError):
+        _ = run.status
+
+
+@patch.object(StateStore, "retrieve", side_effect=KeyError("missing"))
+@patch.object(StateStore, "retrieve_bulk", side_effect=KeyError("missing"))
+def test_genuine_never_existing_run_is_not_returned_as_deleted(
+    _: MagicMock,
+    __: MagicMock,
+    rest_client: FarmvibesAiClient,
+):
+    with pytest.raises(IndexError):
+        rest_client.get_run_by_id(str(UUID(int=0)))
 
 
 @pytest.mark.parametrize("workflow", ["helloworld", j(get_workflow_dir(), "helloworld.yaml")])

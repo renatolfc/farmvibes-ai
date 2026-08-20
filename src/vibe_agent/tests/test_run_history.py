@@ -151,6 +151,24 @@ def test_history_retention_defaults_are_local_only(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.anyio
+async def test_zero_limits_hard_delete_terminal_history():
+    run_id = str(uuid4())
+    state = FakeStateStore(
+        {
+            RUNS_KEY: [run_id],
+            run_id: run_record(run_id, RunStatus.done, ["task"]),
+            f"{run_id}-task": asdict(RunDetails(status=RunStatus.done)),
+        }
+    )
+
+    await history_manager(state, max_full=0, max_compact=0).maintain_history()
+
+    assert state.data[RUNS_KEY] == []
+    assert run_id not in state.data
+    assert f"{run_id}-task" not in state.data
+
+
+@pytest.mark.anyio
 async def test_history_tiers_compact_delete_and_preserve_active_runs():
     run_ids = [str(uuid4()) for _ in range(6)]
     statuses = [

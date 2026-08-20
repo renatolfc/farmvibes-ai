@@ -47,7 +47,12 @@ from vibe_common.constants import (
 from vibe_common.dapr import dapr_ready
 from vibe_common.messaging import WorkMessageBuilder, send
 from vibe_common.secret_provider import DaprSecretConfig
-from vibe_common.statestore import StateStore, StateStoreConflictError, TransactionOperation
+from vibe_common.statestore import (
+    DEFAULT_BULK_PARALLELISM,
+    StateStore,
+    StateStoreConflictError,
+    TransactionOperation,
+)
 from vibe_common.telemetry import (
     add_span_attributes,
     add_trace,
@@ -549,11 +554,13 @@ class TerravibesProvider:
                 except KeyError:
                     return key, None
 
-            return {
-                key: value
-                for key, value in await asyncio.gather(*(retrieve_one(key) for key in keys))
-                if value is not None
-            }
+            existing: Dict[str, Any] = {}
+            for start in range(0, len(keys), DEFAULT_BULK_PARALLELISM):
+                chunk = keys[start : start + DEFAULT_BULK_PARALLELISM]
+                for key, value in await asyncio.gather(*(retrieve_one(key) for key in chunk)):
+                    if value is not None:
+                        existing[key] = value
+            return existing
 
         requested_ids = [str(run_id) for run_id in run_ids]
         run_state = await retrieve_existing(requested_ids)

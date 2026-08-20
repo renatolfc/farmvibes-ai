@@ -15,6 +15,7 @@ from vibe_common.vibe_dapr_client import VibeDaprClient
 LOGGER = logging.getLogger(__name__)
 STATE_STORE = "statestore"
 METADATA = {"partitionKey": "eywa"}
+DEFAULT_BULK_PARALLELISM = 8
 
 
 class TransactionOperation(TypedDict):
@@ -37,7 +38,10 @@ class StateStoreProtocol(Protocol):
     ) -> Tuple[Any, Optional[str]]: ...
 
     async def retrieve_bulk(
-        self, keys: List[str], parallelism: int = 2, traceparent: Optional[str] = None
+        self,
+        keys: List[str],
+        parallelism: int = DEFAULT_BULK_PARALLELISM,
+        traceparent: Optional[str] = None,
     ) -> List[Any]: ...
 
     async def store(self, key: str, obj: Any, traceparent: Optional[str] = None) -> None: ...
@@ -82,7 +86,10 @@ class StateStore(StateStoreProtocol):
             raise KeyError(f"Key {key} not found") from e
 
     async def retrieve_bulk(
-        self, keys: List[str], parallelism: int = 8, traceparent: Optional[str] = None
+        self,
+        keys: List[str],
+        parallelism: int = DEFAULT_BULK_PARALLELISM,
+        traceparent: Optional[str] = None,
     ) -> List[Any]:
         """Retrieves keys in bulk.
 

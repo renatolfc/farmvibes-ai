@@ -1,9 +1,11 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import asyncio
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4 as uuid
 
 import pytest
@@ -12,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from vibe_common.constants import CONTROL_STATUS_PUBSUB, WORKFLOW_REQUEST_PUBSUB_TOPIC
 from vibe_common.messaging import WorkflowCancellationMessage
-from vibe_common.statestore import StateStore, StateStoreConflictError
+from vibe_common.statestore import DEFAULT_BULK_PARALLELISM, StateStore, StateStoreConflictError
 from vibe_core.data.core_types import InnerIOType
 from vibe_core.data.utils import StacConverter, deserialize_stac
 from vibe_core.datamodel import RunConfig, RunConfigInput, RunDetails, RunStatus
@@ -215,6 +217,66 @@ def test_compacted_and_missing_runs_do_not_break_bulk_listing(
     assert detail.json()["history_compacted"] is True
     assert detail.json()["task_details"] == {}
     assert detail.json()["output"] == {}
+
+
+@pytest.mark.anyio
+async def test_bulk_fallback_bounds_concurrency_and_skips_missing_state():
+    provider = TerravibesProvider(LocalHrefHandler("/tmp"))
+    run_ids = [str(uuid()) for _ in range(DEFAULT_BULK_PARALLELISM * 2 + 3)]
+    missing_run_id = run_ids[3]
+    missing_task_run_id = run_ids[5]
+    state: Dict[str, Any] = {}
+    for run_id in run_ids:
+        if run_id == missing_run_id:
+            continue
+        run = asdict(
+            RunConfig(
+                name=run_id,
+                workflow="helloworld",
+                parameters={},
+                user_input={},
+                id=run_id,
+                details=RunDetails(status=RunStatus.done),
+                task_details={},
+                spatio_temporal_json=None,
+            )
+        )
+        run["tasks"] = ["task"]
+        state[run_id] = run
+        if run_id != missing_task_run_id:
+            state[f"{run_id}-task"] = asdict(RunDetails(status=RunStatus.done))
+
+    active = 0
+    peak = 0
+
+    async def retrieve(key: str):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0)
+            if key not in state:
+                raise KeyError(key)
+            return deepcopy(state[key])
+        finally:
+            active -= 1
+
+    provider.state_store.retrieve_bulk = AsyncMock(side_effect=KeyError("partial bulk result"))
+    provider.state_store.retrieve = AsyncMock(side_effect=retrieve)
+
+    runs = await provider.get_bulk_runs_by_id(run_ids)
+
+    assert peak == DEFAULT_BULK_PARALLELISM
+    assert [str(run.id) for run in runs] == [
+        run_id for run_id in run_ids if run_id != missing_run_id
+    ]
+    runs_by_id = {str(run.id): run for run in runs}
+    assert runs_by_id[missing_task_run_id].task_details == {}
+    assert all(
+        run.task_details["task"].status == RunStatus.done
+        for run_id, run in runs_by_id.items()
+        if run_id != missing_task_run_id
+    )
 
 
 def test_invalid_workflow_submission(
