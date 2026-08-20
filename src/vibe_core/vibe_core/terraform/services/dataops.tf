@@ -9,6 +9,8 @@ locals {
       "/opt/conda/bin/vibe-data-ops",
       "data_ops=${var.startup_type}",
       "data_ops.impl.port=3000",
+      "data_ops.impl.max_full_history_runs=${var.max_full_history_runs}",
+      "data_ops.impl.max_compact_history_runs=${var.max_compact_history_runs}",
     ],
     var.otel_service_name != "" ? [
       "data_ops.impl.otel_service_name=${var.otel_service_name}",

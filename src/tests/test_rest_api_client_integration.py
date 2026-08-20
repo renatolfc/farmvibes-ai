@@ -72,6 +72,11 @@ def test_empty_list_runs(_, rest_client: FarmvibesAiClient):
 @pytest.mark.parametrize("workflow", ["helloworld", j(get_workflow_dir(), "helloworld.yaml")])
 @pytest.mark.parametrize("params", [None, {}, {"param1": 1}])
 @patch.object(TerravibesProvider, "submit_work")
+@patch.object(
+    TerravibesProvider,
+    "list_runs_from_store_with_etag",
+    side_effect=lambda: ([], None),
+)
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk")
@@ -85,6 +90,7 @@ def test_submit_run(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    list_runs: MagicMock,
     _: MagicMock,
     rest_client: FarmvibesAiClient,
     the_polygon: Polygon,
@@ -92,13 +98,7 @@ def test_submit_run(
     workflow: str,
     fake_ops_dir: str,
 ):
-    first_retrieve_call = True
-
     def retrieve_side_effect(_):
-        nonlocal first_retrieve_call
-        if first_retrieve_call:
-            first_retrieve_call = False
-            return []
         return asdict(transaction.call_args.args[0][1]["value"])
 
     def bulk_side_effect(_):
@@ -123,6 +123,11 @@ def test_submit_run(
 
 
 @patch.object(TerravibesProvider, "submit_work")
+@patch.object(
+    TerravibesProvider,
+    "list_runs_from_store_with_etag",
+    side_effect=lambda: ([], None),
+)
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk")
@@ -130,6 +135,7 @@ def test_submit_base_vibe_run(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    list_runs: MagicMock,
     _: MagicMock,
     rest_client: FarmvibesAiClient,
 ):
@@ -140,13 +146,7 @@ def test_submit_base_vibe_run(
         seasonal_field_id=seasonal_field_id,
     )
 
-    first_retrieve_call = True
-
     def retrieve_side_effect(_):
-        nonlocal first_retrieve_call
-        if first_retrieve_call:
-            first_retrieve_call = False
-            return []
         return asdict(transaction.call_args.args[0][1]["value"])
 
     def bulk_side_effect(_):
@@ -166,6 +166,11 @@ def test_submit_base_vibe_run(
 @pytest.mark.parametrize("workflow", ["helloworld", j(get_workflow_dir(), "helloworld.yaml")])
 @pytest.mark.parametrize("params", [None, {}, {"param1": 1}])
 @patch.object(TerravibesProvider, "submit_work")
+@patch.object(
+    TerravibesProvider,
+    "list_runs_from_store_with_etag",
+    side_effect=lambda: ([], None),
+)
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk")
@@ -182,6 +187,7 @@ async def test_monitor_run_with_none_datetime_fields(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    list_runs: MagicMock,
     _: MagicMock,
     rest_client: FarmvibesAiClient,
     the_polygon: Polygon,
@@ -189,7 +195,6 @@ async def test_monitor_run_with_none_datetime_fields(
     workflow: str,
     fake_ops_dir: str,
 ):
-    first_retrieve_call = True
     run_config: Optional[Dict[str, Any]] = None
 
     def store_side_effect(_: Any, obj: Any):
@@ -197,11 +202,7 @@ async def test_monitor_run_with_none_datetime_fields(
         run_config = obj
 
     def retrieve_side_effect(_):
-        nonlocal first_retrieve_call, run_config
-        if first_retrieve_call:
-            first_retrieve_call = False
-            return []
-
+        nonlocal run_config
         if run_config is None:
             run_config = asdict(transaction.call_args.args[0][1]["value"])
             if not run_config["task_details"]:

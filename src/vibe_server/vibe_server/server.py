@@ -47,7 +47,7 @@ from vibe_common.constants import (
 from vibe_common.dapr import dapr_ready
 from vibe_common.messaging import WorkMessageBuilder, send
 from vibe_common.secret_provider import DaprSecretConfig
-from vibe_common.statestore import StateStore, TransactionOperation
+from vibe_common.statestore import StateStore, StateStoreConflictError, TransactionOperation
 from vibe_common.telemetry import (
     add_span_attributes,
     add_trace,
@@ -112,6 +112,7 @@ MOUNT_DIR: Final[str] = "/mnt"
 RunList = Union[List[str], List[Dict[str, Any]], JSONResponse]
 WorkflowList = Union[List[str], Dict[str, Any], JSONResponse]
 CreateRunResponse = Union[Dict[str, Union[UUID, str]], JSONResponse]
+RUN_INDEX_UPDATE_RETRIES = 3
 
 
 class WorkflowReturnFormat(StrEnum):
@@ -128,6 +129,7 @@ class TerravibesProvider:
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.state_store = StateStore()
         self.href_handler = href_handler
+        self.run_index_lock = asyncio.Lock()
 
     @add_trace
     def summarize_runs(self, runs: List[RunConfig], fields: List[str] = SUMMARY_DEFAULT_FIELDS):
@@ -281,7 +283,7 @@ class TerravibesProvider:
             run = (await self.get_bulk_runs_by_id([run_id]))[0]
             run_config_user = RunConfigUser.from_runconfig(run)
             return jsonable_encoder(self.href_handler.handle(run_config_user))
-        except KeyError:
+        except (KeyError, IndexError):
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content=asdict(Message(f'Workflow execution "{run_id}" not found')),
@@ -374,13 +376,30 @@ class TerravibesProvider:
             validate_workflow_input(user_input, inputs_spec)
             patch_workflow_sources(user_input, workflow)
 
-            run_ids: List[str] = await self.list_runs_from_store()
-            new_id, new_run = self.create_new_run(runConfig, run_ids)
+            new_id: Optional[str] = None
+            new_run: Optional[RunConfig] = None
+            async with self.run_index_lock:
+                for attempt in range(RUN_INDEX_UPDATE_RETRIES):
+                    run_ids, runs_etag = await self.list_runs_from_store_with_etag()
+                    if new_run is None:
+                        new_id, new_run = self.create_new_run(runConfig, run_ids)
+                    else:
+                        run_ids.append(cast(str, new_id))
+                    try:
+                        if runs_etag is None:
+                            await self.update_run_state(run_ids, new_run)
+                        else:
+                            await self.update_run_state(run_ids, new_run, runs_etag)
+                        break
+                    except StateStoreConflictError:
+                        if attempt + 1 == RUN_INDEX_UPDATE_RETRIES:
+                            raise
+
+            assert new_run is not None
             add_span_attributes({"run_id": new_id})
 
             if new_id is None:
                 raise RuntimeError("Failed to create new run id")
-            await self.update_run_state(run_ids, new_run)
 
             # Update run id with parsed workflow and user input
             new_run.workflow = asdict(workflow.workflow_spec)
@@ -464,17 +483,26 @@ class TerravibesProvider:
         return new_id, new_run
 
     @add_trace
-    async def update_run_state(self, run_ids: List[str], new_run: RunConfig):
+    async def update_run_state(
+        self, run_ids: List[str], new_run: RunConfig, runs_etag: Optional[str] = None
+    ):
+        runs_operation = cast(
+            TransactionOperation,
+            {
+                "key": RUNS_KEY,
+                "operation": "upsert",
+                "value": run_ids,
+            },
+        )
+        if runs_etag is not None:
+            runs_operation["etag"] = runs_etag
+            runs_operation["options"] = {
+                "concurrency": "first-write",
+                "consistency": "strong",
+            }
         await self.state_store.transaction(
             [
-                cast(
-                    TransactionOperation,
-                    {
-                        "key": RUNS_KEY,
-                        "operation": "upsert",
-                        "value": run_ids,
-                    },
-                ),
+                runs_operation,
                 cast(
                     TransactionOperation,
                     {
@@ -495,16 +523,65 @@ class TerravibesProvider:
             return []
 
     @add_trace
+    async def list_runs_from_store_with_etag(self) -> Tuple[List[str], Optional[str]]:
+        try:
+            return await self.state_store.retrieve_with_etag(RUNS_KEY)
+        except KeyError:
+            return [], None
+
+    @add_trace
     async def get_bulk_runs_by_id(self, run_ids: Union[List[str], List[UUID]]) -> List[RunConfig]:
-        run_data = await self.state_store.retrieve_bulk([str(id) for id in run_ids])
-        run_id_to_data = {r["id"]: r for r in run_data}
-        run_task_ids = [(r["id"], task) for r in run_data for task in r.get("tasks", [])]
-        task_data = await self.state_store.retrieve_bulk([f"{i[0]}-{i[1]}" for i in run_task_ids])
-        for run_task_id, task_datum in zip(run_task_ids, task_data):
-            run_id, task_name = run_task_id
-            run_datum = run_id_to_data[run_id]
-            run_datum["task_details"][task_name] = task_datum
-        runs = [RunConfig(**cast(Dict[str, Any], data)) for data in run_data]
+        async def retrieve_existing(keys: List[str]) -> Dict[str, Any]:
+            if not keys:
+                return {}
+            try:
+                values = await self.state_store.retrieve_bulk(keys)
+                if len(values) == len(keys):
+                    return {key: value for key, value in zip(keys, values) if value is not None}
+            except KeyError:
+                pass
+
+            async def retrieve_one(key: str) -> Tuple[str, Optional[Any]]:
+                try:
+                    return key, await self.state_store.retrieve(key)
+                except KeyError:
+                    return key, None
+
+            return {
+                key: value
+                for key, value in await asyncio.gather(*(retrieve_one(key) for key in keys))
+                if value is not None
+            }
+
+        requested_ids = [str(run_id) for run_id in run_ids]
+        run_state = await retrieve_existing(requested_ids)
+        ordered_run_data = [
+            run_state[run_id] for run_id in requested_ids if isinstance(run_state.get(run_id), dict)
+        ]
+        run_task_ids = [
+            (str(run_data.get("id", "")), task)
+            for run_data in ordered_run_data
+            for task in run_data.get("tasks", [])
+        ]
+        task_keys = [f"{run_id}-{task}" for run_id, task in run_task_ids]
+        task_state = await retrieve_existing(task_keys)
+        for run_data in ordered_run_data:
+            run_data.setdefault("task_details", {})
+            run_id = str(run_data.get("id", ""))
+            for task in run_data.get("tasks", []):
+                task_key = f"{run_id}-{task}"
+                if task_key in task_state:
+                    run_data["task_details"][task] = task_state[task_key]
+
+        runs = []
+        for run_data in ordered_run_data:
+            try:
+                runs.append(RunConfig(**cast(Dict[str, Any], run_data)))
+            except (TypeError, ValueError, pydantic.ValidationError):
+                self.logger.warning(
+                    f"Ignoring invalid or concurrently deleted workflow run "
+                    f"{run_data.get('id', '<unknown>')}"
+                )
         return runs
 
     def submit_work(self, new_run: RunConfig):

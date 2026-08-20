@@ -494,6 +494,8 @@ class TerraformWrapper:
         redis_image: str = REDIS_IMAGE,
         rabbitmq_image: str = RABBITMQ_IMAGE,
         is_update: bool = False,
+        max_full_history_runs: int = 100,
+        max_compact_history_runs: int = 900,
     ):
         if not is_update:
             self.init(self.os_artifacts.local_directory, False, cleanup_state=True)
@@ -514,6 +516,8 @@ class TerraformWrapper:
             "farmvibes_log_level": log_level,
             "max_log_file_bytes": f"{max_log_file_bytes}" if max_log_file_bytes else "",
             "log_backup_count": f"{log_backup_count}" if log_backup_count else "",
+            "max_full_history_runs": f"{max_full_history_runs}",
+            "max_compact_history_runs": f"{max_compact_history_runs}",
         }
 
         state_file = self.os_artifacts.get_terraform_file("local.tfstate", cluster_name)

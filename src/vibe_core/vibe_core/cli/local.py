@@ -1231,6 +1231,8 @@ def setup(
     registry_port: Optional[int] = None,
     redis_image: Optional[str] = None,
     rabbitmq_image: Optional[str] = None,
+    max_full_history_runs: int = 100,
+    max_compact_history_runs: int = 900,
 ) -> bool:
     log("Updating local cluster" if is_update else "Setting up local cluster")
     os.makedirs(data_path, exist_ok=True)
@@ -1648,6 +1650,8 @@ def setup(
             enable_telemetry,
             redis_image,
             rabbitmq_image,
+            max_full_history_runs=max_full_history_runs,
+            max_compact_history_runs=max_compact_history_runs,
             is_update=terraform_is_update,
         )
     if (
@@ -2049,6 +2053,8 @@ def _dispatch_unlocked(
             registry_port=args.registry_port,
             redis_image=args.redis_image,
             rabbitmq_image=args.rabbitmq_image,
+            max_full_history_runs=args.max_full_history_runs,
+            max_compact_history_runs=args.max_compact_history_runs,
         )
     elif args.action in {"destroy", "delete", "remove", "rm"}:
         return destroy(k3d, data_path=data_path)

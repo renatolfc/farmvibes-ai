@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from vibe_common.constants import CONTROL_STATUS_PUBSUB, WORKFLOW_REQUEST_PUBSUB_TOPIC
 from vibe_common.messaging import WorkflowCancellationMessage
-from vibe_common.statestore import StateStore
+from vibe_common.statestore import StateStore, StateStoreConflictError
 from vibe_core.data.core_types import InnerIOType
 from vibe_core.data.utils import StacConverter, deserialize_stac
 from vibe_core.datamodel import RunConfig, RunConfigInput, RunDetails, RunStatus
@@ -83,7 +83,9 @@ def test_generate_api_documentation_page(request_client: requests.Session):
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 @patch.object(StateStore, "retrieve_bulk", side_effect=lambda _: [])
+@patch.object(StateStore, "retrieve_with_etag", side_effect=lambda _: ([], None))
 def test_workflow_submission(
+    _: MagicMock,
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
@@ -120,11 +122,98 @@ def test_workflow_submission(
     assert len(response.json()) == 1
 
 
+@patch.object(TerravibesProvider, "submit_work")
+@patch.object(
+    StateStore,
+    "transaction",
+    side_effect=[StateStoreConflictError("simulated conflict"), None],
+)
+@patch.object(
+    StateStore,
+    "retrieve_with_etag",
+    side_effect=[(["older"], "1"), (["concurrent"], "2")],
+)
+def test_workflow_submission_retries_run_index_conflict(
+    _: MagicMock,
+    transaction: MagicMock,
+    __: MagicMock,
+    workflow_run_config: Dict[str, Any],
+    request_client: requests.Session,
+):
+    response = request_client.post("/v0/runs", json=workflow_run_config)
+
+    assert response.status_code == 201
+    run_id = response.json()["id"]
+    assert transaction.await_count == 2
+    assert transaction.call_args_list[0].args[0][0]["value"] == ["older", run_id]
+    assert transaction.call_args_list[1].args[0][0]["value"] == ["concurrent", run_id]
+    assert transaction.call_args_list[1].args[0][0]["etag"] == "2"
+
+
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 def test_no_workflow_runs(_, request_client: requests.Session):
     response = request_client.get("/v0/runs")
     assert response.status_code == 200
     assert len(response.json()) == 0
+
+
+@patch.object(StateStore, "retrieve_bulk", side_effect=KeyError("concurrent deletion"))
+@patch.object(StateStore, "retrieve")
+def test_compacted_and_missing_runs_do_not_break_bulk_listing(
+    retrieve: MagicMock,
+    _: MagicMock,
+    request_client: requests.Session,
+):
+    compacted_id = str(uuid())
+    missing_id = str(uuid())
+    compacted = asdict(
+        RunConfig(
+            name="compacted",
+            workflow="helloworld",
+            parameters={"preserved": True},
+            user_input={"input": "preserved"},
+            id=compacted_id,
+            details=RunDetails(status=RunStatus.done),
+            task_details={},
+            spatio_temporal_json=None,
+            output="",
+            history_compacted=True,
+        )
+    )
+
+    def retrieve_effect(key: str):
+        if key == compacted_id:
+            return compacted
+        raise KeyError(key)
+
+    retrieve.side_effect = retrieve_effect
+    response = request_client.get(
+        "/v0/runs",
+        params=[
+            ("ids", compacted_id),
+            ("ids", missing_id),
+            ("fields", "id"),
+            ("fields", "history_compacted"),
+            ("fields", "task_details"),
+            ("fields", "details.status"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": compacted_id,
+            "history_compacted": True,
+            "task_details": {},
+            "details.status": RunStatus.done,
+        }
+    ]
+
+    detail = request_client.get(f"/v0/runs/{compacted_id}")
+    assert detail.status_code == 200
+    assert detail.json()["history_compacted"] is True
+    assert detail.json()["task_details"] == {}
+    assert detail.json()["output"] == {}
 
 
 def test_invalid_workflow_submission(
@@ -146,7 +235,11 @@ def test_missing_field_workflow_submission(
 
 @patch.object(TerravibesProvider, "submit_work", side_effect=Exception("sorry"))
 @patch.object(TerravibesProvider, "update_run_state")
-@patch.object(TerravibesProvider, "list_runs_from_store", return_value=[])
+@patch.object(
+    TerravibesProvider,
+    "list_runs_from_store_with_etag",
+    side_effect=lambda: ([], None),
+)
 def test_submit_local_workflows_with_broken_work_submission(
     _, __: Any, ___: Any, workflow_run_config: Dict[str, Any], request_client: requests.Session
 ):
@@ -159,11 +252,13 @@ def test_submit_local_workflows_with_broken_work_submission(
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 @patch.object(StateStore, "retrieve_bulk")
+@patch.object(StateStore, "retrieve_with_etag", side_effect=lambda _: ([], None))
 def test_workflow_submission_and_cancellation(
+    retrieve_with_etag: MagicMock,
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
-    _: MagicMock,
+    submit_work: MagicMock,
     send: MagicMock,
     workflow_run_config: Dict[str, Any],
     request_client: requests.Session,
@@ -189,11 +284,17 @@ def test_workflow_submission_and_cancellation(
 @pytest.mark.parametrize("params", [None, {"param1": "new_param"}])
 @patch.object(TerravibesProvider, "submit_work")
 @patch.object(TerravibesProvider, "update_run_state")
+@patch.object(
+    TerravibesProvider,
+    "list_runs_from_store_with_etag",
+    side_effect=lambda: ([], None),
+)
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk", side_effect=lambda _: [])
 def test_workflow_resubmission(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
+    _: MagicMock,
     update_run_state: MagicMock,
     submit_work: MagicMock,
     params: Optional[Dict[str, Any]],
@@ -218,6 +319,9 @@ def test_workflow_resubmission(
     response = request_client.post("/v0/runs", json=workflow_run_config)
     assert response.status_code == 201
 
+    first_run["history_compacted"] = True
+    first_run["output"] = ""
+    first_run["task_details"] = {}
     retrieve.side_effect = [first_run, []]
     response = request_client.post(f"/v0/runs/{uuid()}/resubmit")
 

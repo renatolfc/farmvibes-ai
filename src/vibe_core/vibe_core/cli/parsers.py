@@ -45,6 +45,13 @@ LOCAL_OTEL_PATH = os.path.join(CORE_DIR, "terraform", "local", "modules", "kuber
 REMOTE_OTEL_PATH = os.path.join(CORE_DIR, "terraform", "aks", "modules", "kubernetes", "otel.tf")
 
 
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
 class CliParser(ABC):
     SUPPORTED_COMMANDS = [
         ("setup", SETUP_HELP, ["create", "new"]),
@@ -226,6 +233,18 @@ class LocalCliParser(CliParser):
                 type=int,
                 default=None,
                 help="Number of log files to keep for each service instance.",
+            )
+            command.add_argument(
+                "--max-full-history-runs",
+                type=_non_negative_int,
+                default=100,
+                help="Newest workflow runs to retain with task details and output.",
+            )
+            command.add_argument(
+                "--max-compact-history-runs",
+                type=_non_negative_int,
+                default=900,
+                help="Compacted workflow run summaries to retain after the full-history tier.",
             )
             command.add_argument(
                 "--worker-replicas",

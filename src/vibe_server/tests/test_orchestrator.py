@@ -73,26 +73,30 @@ def make_test_message(
 @patch("vibe_common.statestore.StateStore.store")
 @pytest.mark.anyio
 async def test_orchestrator_add_output(store: Mock, retrieve: Mock, run_config: Dict[str, Any]):
+    run_config["tasks"] = ["task"]
     retrieve.side_effect = lambda _: run_config
     output = cast(OpIOType, {"some-op": {"data": "fake"}})
     statestore = StateStore()
     await WorkflowRunManager.add_output_to_run(run_config["id"], output, statestore)
     run_config["output"] = encode(dump_to_json(output))
-    store.assert_called_with(run_config["id"], RunConfig(**run_config))
+    store.assert_called_with(run_config["id"], run_config)
+    assert store.call_args.args[1]["tasks"] == ["task"]
 
 
 @patch("vibe_common.statestore.StateStore.retrieve")
 @patch("vibe_common.statestore.StateStore.store")
 @pytest.mark.anyio
 async def test_orchestrator_fail_workflow(store: Mock, retrieve: Mock, run_config: Dict[str, Any]):
+    run_config["tasks"] = ["task"]
     retrieve.side_effect = lambda _: run_config
     orchestrator = Orchestrator()
     reason = "fake reason"
     await orchestrator.fail_workflow(run_config["id"], reason)
     run_config["details"]["status"] = RunStatus.failed
     run_config["details"]["reason"] = reason
-    assert store.mock_calls[0][1][1].details.status == RunStatus.failed
-    assert store.mock_calls[0][1][1].details.reason == reason
+    assert store.mock_calls[0][1][1]["details"]["status"] == RunStatus.failed
+    assert store.mock_calls[0][1][1]["details"]["reason"] == reason
+    assert store.mock_calls[0][1][1]["tasks"] == ["task"]
 
 
 def to_cloud_event(msg: WorkMessage) -> v1.Event:

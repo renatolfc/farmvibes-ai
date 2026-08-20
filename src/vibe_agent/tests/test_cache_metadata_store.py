@@ -93,6 +93,12 @@ class AsyncFakeRedis:
     async def sismember(self, key: str, value: str):
         return value in self.data.get(key, set())
 
+    async def scan_iter(self, match: str):
+        prefix = match[:-1] if match.endswith("*") else match
+        for key in self.data:
+            if key.startswith(prefix):
+                yield key
+
     def pipeline(self, transaction: bool = True):
         return AsyncFakeRedisPipeline(self)
 
@@ -158,6 +164,22 @@ def assert_op_in_fake_redis(redis_client: AsyncFakeRedis, run_id: str, fake_op: 
         for asset_id in fake_op.asset_ids:
             asset_op_key = RedisCacheMetadataStore._asset_ops_key_format.format(asset_id=asset_id)
             assert op_ref in redis_client.data[asset_op_key]
+
+
+@pytest.mark.anyio
+async def test_find_keys():
+    do_manager, redis_client_mock, _ = get_mocked_data_ops()
+    redis_client_mock.data.update(
+        {
+            "run-id-task-a": {},
+            "run-id-task-b": {},
+            "other-key": {},
+        }
+    )
+
+    keys = await do_manager.metadata_store.find_keys("run-id-*")
+
+    assert keys == {"run-id-task-a", "run-id-task-b"}
 
 
 @pytest.mark.anyio
@@ -244,9 +266,9 @@ async def test_delete_workflow_run_no_assets(
 
     assert ss_store_mock.call_count == 2
     rc1 = ss_store_mock.call_args_list[0][0][1]
-    assert rc1.details.status == RunStatus.deleting
+    assert rc1["details"]["status"] == RunStatus.deleting
     rc2 = ss_store_mock.call_args_list[1][0][1]
-    assert rc2.details.status == RunStatus.deleted
+    assert rc2["details"]["status"] == RunStatus.deleted
 
     storage_mock.asset_manager.remove.assert_not_called()
     storage_mock.remove.assert_called_once_with(no_asset_op_run.get_op_run_id())
@@ -272,9 +294,9 @@ async def test_delete_workflow_run_simple(
 
     assert ss_store_mock.call_count == 2
     rc1 = ss_store_mock.call_args_list[0][0][1]
-    assert rc1.details.status == RunStatus.deleting
+    assert rc1["details"]["status"] == RunStatus.deleting
     rc2 = ss_store_mock.call_args_list[1][0][1]
-    assert rc2.details.status == RunStatus.deleted
+    assert rc2["details"]["status"] == RunStatus.deleted
 
     calls = [call(asset_id) for asset_id in op_1_run.asset_ids]
     storage_mock.asset_manager.remove.assert_has_calls(calls, any_order=True)

@@ -5,7 +5,9 @@
 # -*- coding: utf-8 -*-
 
 import logging
-from typing import Any, List, Optional, Protocol, TypedDict
+from typing import Any, Dict, List, Optional, Protocol, Tuple
+
+from typing_extensions import NotRequired, Required, TypedDict
 
 from vibe_common.constants import STATE_URL_TEMPLATE
 from vibe_common.vibe_dapr_client import VibeDaprClient
@@ -16,23 +18,35 @@ METADATA = {"partitionKey": "eywa"}
 
 
 class TransactionOperation(TypedDict):
-    key: str
-    operation: str
-    value: Optional[Any]
+    key: Required[str]
+    operation: Required[str]
+    value: NotRequired[Optional[Any]]
+    etag: NotRequired[str]
+    options: NotRequired[Dict[str, str]]
+
+
+class StateStoreConflictError(RuntimeError):
+    """Raised when an optimistic state-store transaction loses a race."""
 
 
 class StateStoreProtocol(Protocol):
     async def retrieve(self, key: str, traceparent: Optional[str] = None) -> Any: ...
 
+    async def retrieve_with_etag(
+        self, key: str, traceparent: Optional[str] = None
+    ) -> Tuple[Any, Optional[str]]: ...
+
     async def retrieve_bulk(
         self, keys: List[str], parallelism: int = 2, traceparent: Optional[str] = None
     ) -> List[Any]: ...
 
-    async def store(self, key: str, obj: Any, traceparent: Optional[str] = None) -> bool: ...
+    async def store(self, key: str, obj: Any, traceparent: Optional[str] = None) -> None: ...
+
+    async def delete(self, key: str, traceparent: Optional[str] = None) -> None: ...
 
     async def transaction(
         self, operations: List[TransactionOperation], traceparent: Optional[str] = None
-    ) -> bool: ...
+    ) -> None: ...
 
 
 class StateStore(StateStoreProtocol):
@@ -47,14 +61,23 @@ class StateStore(StateStoreProtocol):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     async def retrieve(self, key: str, traceparent: Optional[str] = None) -> Any:
+        value, _ = await self.retrieve_with_etag(key, traceparent)
+        return value
+
+    async def retrieve_with_etag(
+        self, key: str, traceparent: Optional[str] = None
+    ) -> Tuple[Any, Optional[str]]:
         try:
             response = await self.vibe_dapr_client.get(
                 STATE_URL_TEMPLATE.format(self.state_store, key),
                 traceparent=traceparent,
-                params={"metadata.partitionKey": METADATA["partitionKey"]},
+                params={"metadata.partitionKey": self.partition_key},
             )
 
-            return await self.vibe_dapr_client.response_json(response)
+            return (
+                await self.vibe_dapr_client.response_json(response),
+                response.headers.get("ETag"),
+            )
         except KeyError as e:
             raise KeyError(f"Key {key} not found") from e
 
@@ -75,17 +98,20 @@ class StateStore(StateStoreProtocol):
                 "parallelism": parallelism,
             },
             traceparent=traceparent,
-            params={"metadata.partitionKey": METADATA["partitionKey"]},
+            params={"metadata.partitionKey": self.partition_key},
         )
 
         states = await self.vibe_dapr_client.response_json(response)
 
-        if len(states) != len(keys):
-            keyset = set(keys)
-            for state in states:
-                keyset.remove(state[0])
-            raise KeyError(f"Failed to retrieve keys {keyset} from state store.")
-        return [state["data"] for state in states]
+        state_by_key = {
+            state["key"]: state.get("data")
+            for state in states
+            if isinstance(state, dict) and "key" in state
+        }
+        missing = {key for key in keys if state_by_key.get(key) is None}
+        if missing:
+            raise KeyError(f"Failed to retrieve keys {missing} from state store.")
+        return [state_by_key[key] for key in keys]
 
     async def store(self, key: str, obj: Any, traceparent: Optional[str] = None) -> None:
         response = await self.vibe_dapr_client.post(
@@ -101,20 +127,27 @@ class StateStore(StateStoreProtocol):
         )
         assert response.ok, "Failed to store state, but underlying method didn't capture it"
 
+    async def delete(self, key: str, traceparent: Optional[str] = None) -> None:
+        await self.transaction(
+            [TransactionOperation(key=key, operation="delete")],
+            traceparent=traceparent,
+        )
+
     async def transaction(
         self, operations: List[TransactionOperation], traceparent: Optional[str] = None
     ) -> None:
-        queries = [
-            {
-                "operation": o["operation"],
-                "request": {
-                    "key": o["key"],
-                    "value": self.vibe_dapr_client.obj_json(o["value"]),
-                },
-            }
-            for o in operations
-        ]
-        await self.vibe_dapr_client.post(
+        queries = []
+        for operation in operations:
+            request: Dict[str, Any] = {"key": operation["key"]}
+            if operation["operation"] != "delete":
+                request["value"] = self.vibe_dapr_client.obj_json(operation.get("value"))
+            if "etag" in operation:
+                request["etag"] = operation["etag"]
+            if "options" in operation:
+                request["options"] = operation["options"]
+            queries.append({"operation": operation["operation"], "request": request})
+
+        response = await self.vibe_dapr_client.post(
             url=STATE_URL_TEMPLATE.format(self.state_store, "transaction"),
             data={
                 "operations": queries,
@@ -122,3 +155,10 @@ class StateStore(StateStoreProtocol):
             },
             traceparent=traceparent,
         )
+        if not response.ok:
+            body = await response.text()
+            if response.status == 409 or any(
+                marker in body.lower() for marker in ("etag", "first-write", "conflict")
+            ):
+                raise StateStoreConflictError(body)
+            raise RuntimeError(f"State store transaction failed: {body}")

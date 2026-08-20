@@ -18,7 +18,9 @@ redis_cache_metadata_store_config = RedisCacheMetadataStoreConfig()
 # create two DataOpsConfigs: one to build DataOpsManager with local storage and another for
 # to build DataOpsManager with AKS/Cosmos storage
 local_data_ops_config = DataOpsConfig(
-    metadata_store=redis_cache_metadata_store_config, storage=local_storage
+    metadata_store=redis_cache_metadata_store_config,
+    storage=local_storage,
+    scan_redis_workflow_state=True,
 )
 aks_data_ops_config = DataOpsConfig(
     metadata_store=redis_cache_metadata_store_config, storage=aks_cosmos_config
