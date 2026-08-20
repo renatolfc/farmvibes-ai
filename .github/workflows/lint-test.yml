@@ -211,4 +211,4 @@ jobs:
         if [ -x "$FARMVIBES_AI_CONFIG_DIR/k3d" ]; then
           "$FARMVIBES_AI_CONFIG_DIR/k3d" cluster delete "$FARMVIBES_AI_CLUSTER_NAME" || true
         fi
-        rm -rf "$FARMVIBES_AI_STORAGE_PATH" "$FARMVIBES_AI_CONFIG_DIR"
+        sudo rm -rf "$FARMVIBES_AI_STORAGE_PATH" "$FARMVIBES_AI_CONFIG_DIR"

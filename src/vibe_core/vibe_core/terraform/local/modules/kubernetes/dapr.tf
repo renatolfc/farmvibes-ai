@@ -126,6 +126,26 @@ resource "kubectl_manifest" "resiliency-sidecar" {
   depends_on = [helm_release.dapr, kubectl_manifest.statestore-sidecar]
 }
 
+resource "kubectl_manifest" "cache-initialization-resiliency" {
+  yaml_body = <<-EOF
+    apiVersion: dapr.io/v1alpha1
+    kind: Resiliency
+    metadata:
+      name: cache-initialization-resiliency
+    scopes:
+      - terravibes-cache
+    spec:
+      policies:
+        retries:
+          DaprBuiltInInitializationRetries:
+            policy: constant
+            duration: 1s
+            maxRetries: 15
+    EOF
+
+  depends_on = [helm_release.dapr, kubectl_manifest.statestore-sidecar]
+}
+
 resource "kubectl_manifest" "daprconfigcollector" {
   yaml_body = <<-EOF
     apiVersion: dapr.io/v1alpha1

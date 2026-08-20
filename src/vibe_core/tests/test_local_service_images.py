@@ -331,3 +331,6 @@ def test_native_terraform_preserves_service_contracts():
         "            duration: 1s\n"
         "            maxRetries: 15"
     ) in dapr
+    assert "name: cache-initialization-resiliency" in dapr
+    assert "scopes:\n      - terravibes-cache" in dapr
+    assert dapr.count("DaprBuiltInInitializationRetries:") == 2
