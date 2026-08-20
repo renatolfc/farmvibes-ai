@@ -131,7 +131,7 @@ jobs:
   local-integration-tests:
     runs-on: ubuntu-latest
     env:
-      FARMVIBES_AI_CLUSTER_NAME: farmvibes-ai-migration-${{ github.run_id }}-${{ github.run_attempt }}
+      FARMVIBES_AI_CLUSTER_NAME: fv-mig-${{ github.run_id }}-${{ github.run_attempt }}
       FARMVIBES_AI_STORAGE_PATH: /tmp/farmvibes-ai-migration-${{ github.run_id }}-${{ github.run_attempt }}
       FARMVIBES_AI_CONFIG_DIR: /tmp/farmvibes-ai-config-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
