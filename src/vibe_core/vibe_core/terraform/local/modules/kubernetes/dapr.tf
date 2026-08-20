@@ -141,6 +141,7 @@ resource "kubectl_manifest" "cache-initialization-resiliency" {
             policy: constant
             duration: 1s
             maxRetries: 15
+      targets: {}
     EOF
 
   depends_on = [helm_release.dapr, kubectl_manifest.statestore-sidecar]
