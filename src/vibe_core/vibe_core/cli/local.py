@@ -118,7 +118,10 @@ def backup_redis_data(kubectl: KubectlWrapper, data_path: str) -> bool:
 
 
 def restore_redis_data(
-    kubectl: KubectlWrapper, data_path: str, skip_confirmation: bool = False
+    kubectl: KubectlWrapper,
+    data_path: str,
+    skip_confirmation: bool = False,
+    redis_image: str = REDIS_IMAGE,
 ) -> bool:
     _, redis_master, kind = find_redis_master(kubectl)
     backup_path = os.path.join(data_path, REDIS_DUMP)
@@ -139,7 +142,7 @@ def restore_redis_data(
     with kubectl.context():
         try:
             kubectl.scale(kind, redis_master, 0)
-            if not kubectl.create_redis_volume_pod():
+            if not kubectl.create_redis_volume_pod(redis_image=redis_image):
                 log("Unable to create redis volume pod", level="error")
                 return False
             kubectl.cp(backup_path, "redisvolpod:/mnt/dump.rdb")
@@ -426,7 +429,12 @@ def setup(
     log(f"Cluster {'update' if is_update else 'setup'} complete!")
 
     if not is_update:
-        restored = restore_redis_data(kubectl, data_path, skip_confirmation=service_migration)
+        restored = restore_redis_data(
+            kubectl,
+            data_path,
+            skip_confirmation=service_migration,
+            redis_image=redis_image,
+        )
         if service_migration and not restored:
             log("Unable to restore Redis workflow state after migration.", level="error")
             return False

@@ -45,7 +45,7 @@ CPUS_REQUIRED = {
 }
 MAXIMUM_STORAGE_ACCOUNT_NAME_LENGTH = 24
 CONFIG_CONTEXT = "k3d-{cluster_name}"
-REDIS_VOL_POD_YAML = f"""apiVersion: v1
+REDIS_VOL_POD_YAML = """apiVersion: v1
 kind: Pod
 metadata:
   name: redisvolpod
@@ -55,7 +55,7 @@ spec:
     - tail
     - "-f"
     - "/dev/null"
-    image: {REDIS_IMAGE}
+    image: {redis_image}
     name: delete-this-container
     volumeMounts:
     - mountPath: "/mnt"
@@ -1317,11 +1317,13 @@ class KubectlWrapper:
             subprocess_log_level="debug",
         )
 
-    def create_redis_volume_pod(self, cluster_name: str = ""):
+    def create_redis_volume_pod(
+        self, cluster_name: str = "", redis_image: str = REDIS_IMAGE
+    ):
         cluster_name = self._actual_cluster_name(cluster_name)
         with tempfile.TemporaryDirectory() as tmpdir:
             with open(os.path.join(tmpdir, "redis-vol-pod.yaml"), "w") as fp:
-                fp.write(REDIS_VOL_POD_YAML)
+                fp.write(REDIS_VOL_POD_YAML.format(redis_image=redis_image))
             cmd = [self.os_artifacts.kubectl, "apply", "-f", fp.name]
             execute_cmd(
                 cmd,
