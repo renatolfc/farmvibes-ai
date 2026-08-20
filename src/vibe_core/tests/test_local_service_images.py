@@ -306,6 +306,7 @@ def test_native_terraform_preserves_service_contracts():
     redis = (terraform_dir / "redis.tf").read_text()
     rabbitmq = (terraform_dir / "rabbitmq.tf").read_text()
     dapr = (terraform_dir / "dapr.tf").read_text()
+    outputs = (terraform_dir / "outputs.tf").read_text()
     resources = redis + rabbitmq
 
     assert "helm_release" not in resources
@@ -335,3 +336,4 @@ def test_native_terraform_preserves_service_contracts():
     assert "scopes:\n      - terravibes-cache" in dapr
     assert dapr.count("DaprBuiltInInitializationRetries:") == 2
     assert "maxRetries: 15\n      targets: {}" in dapr
+    assert "kubectl_manifest.cache-initialization-resiliency" in outputs

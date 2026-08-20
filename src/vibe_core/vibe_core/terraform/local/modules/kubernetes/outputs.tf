@@ -9,7 +9,8 @@ output "ready_to_deploy" {
     kubernetes_stateful_set.redis,
     kubernetes_stateful_set.rabbitmq,
     kubectl_manifest.control-pubsub-sidecar,
-    kubectl_manifest.resiliency-sidecar
+    kubectl_manifest.resiliency-sidecar,
+    kubectl_manifest.cache-initialization-resiliency
   ]
 }
 
