@@ -81,6 +81,10 @@ resource "kubernetes_stateful_set" "redis" {
         automount_service_account_token  = false
         termination_grace_period_seconds = 30
 
+        image_pull_secrets {
+          name = "acrtoken"
+        }
+
         container {
           name              = "redis"
           image             = var.redis_image

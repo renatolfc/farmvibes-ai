@@ -10,7 +10,7 @@ import pytest
 
 import vibe_core.cli.local as local
 import vibe_core.cli.wrappers as wrappers
-from vibe_core.cli.constants import RABBITMQ_IMAGE, REDIS_IMAGE
+from vibe_core.cli.constants import DEFAULT_REGISTRY_PATH, RABBITMQ_IMAGE, REDIS_IMAGE
 from vibe_core.cli.osartifacts import OSArtifacts
 from vibe_core.cli.parsers import LocalCliParser
 from vibe_core.cli.wrappers import K3dWrapper, KubectlWrapper, TerraformWrapper
@@ -18,6 +18,10 @@ from vibe_core.cli.wrappers import K3dWrapper, KubectlWrapper, TerraformWrapper
 CUSTOM_REDIS_IMAGE = (
     "registry.airgap.example/farmvibes/redis@sha256:"
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
+CUSTOM_RABBITMQ_IMAGE = (
+    "registry.airgap.example/farmvibes/rabbitmq@sha256:"
+    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 )
 
 
@@ -35,14 +39,11 @@ def test_local_parser_service_image_defaults_and_overrides():
                 "--redis-image",
                 CUSTOM_REDIS_IMAGE,
                 "--rabbitmq-image",
-                "registry.airgap.example/farmvibes/rabbitmq@sha256:"
-                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                CUSTOM_RABBITMQ_IMAGE,
             ]
         )
         assert overrides.redis_image == CUSTOM_REDIS_IMAGE
-        assert overrides.rabbitmq_image.startswith(
-            "registry.airgap.example/farmvibes/rabbitmq@sha256:"
-        )
+        assert overrides.rabbitmq_image == CUSTOM_RABBITMQ_IMAGE
 
 
 @pytest.mark.parametrize(("action", "is_update"), [("setup", False), ("update", True)])
@@ -77,12 +78,12 @@ def test_local_dispatch_forwards_service_images(
             "--redis-image",
             CUSTOM_REDIS_IMAGE,
             "--rabbitmq-image",
-            "registry.example/rabbitmq:test",
+            CUSTOM_RABBITMQ_IMAGE,
         ]
     )
     assert local.dispatch(args) is True
     assert captured["redis_image"] == CUSTOM_REDIS_IMAGE
-    assert captured["rabbitmq_image"] == "registry.example/rabbitmq:test"
+    assert captured["rabbitmq_image"] == CUSTOM_RABBITMQ_IMAGE
     assert captured["is_update"] is is_update
 
 
@@ -124,12 +125,12 @@ def test_terraform_wrapper_propagates_service_images(
         worker_replicas=1,
         config_context="k3d-test",
         enable_telemetry=False,
-        redis_image="registry.example/redis:test",
-        rabbitmq_image="registry.example/rabbitmq:test",
+        redis_image=CUSTOM_REDIS_IMAGE,
+        rabbitmq_image=CUSTOM_RABBITMQ_IMAGE,
     )
 
-    assert captured["redis_image"] == "registry.example/redis:test"
-    assert captured["rabbitmq_image"] == "registry.example/rabbitmq:test"
+    assert captured["redis_image"] == CUSTOM_REDIS_IMAGE
+    assert captured["rabbitmq_image"] == CUSTOM_RABBITMQ_IMAGE
     assert "redis_image_tag" not in captured
     assert "rabbitmq_image_tag" not in captured
 
@@ -177,18 +178,46 @@ def test_restore_redis_data_forwards_selected_image(
 
 
 @pytest.mark.parametrize(
-    ("is_update", "cluster_exists", "redis_image"),
+    (
+        "is_update",
+        "cluster_exists",
+        "redis_image",
+        "rabbitmq_image",
+        "registry",
+        "username",
+        "password",
+    ),
     [
-        (False, False, REDIS_IMAGE),
-        (True, True, CUSTOM_REDIS_IMAGE),
+        (
+            False,
+            False,
+            REDIS_IMAGE,
+            RABBITMQ_IMAGE,
+            DEFAULT_REGISTRY_PATH,
+            "",
+            "",
+        ),
+        (
+            True,
+            True,
+            CUSTOM_REDIS_IMAGE,
+            CUSTOM_RABBITMQ_IMAGE,
+            "registry.airgap.example",
+            "robot",
+            "token",
+        ),
     ],
 )
-def test_setup_uses_same_redis_image_for_statefulset_and_restore(
+def test_setup_uses_service_images_for_workloads_and_restore(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     is_update: bool,
     cluster_exists: bool,
     redis_image: str,
+    rabbitmq_image: str,
+    registry: str,
+    username: str,
+    password: str,
 ):
     monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config"))
     artifacts = Mock(spec=OSArtifacts)
@@ -226,15 +255,26 @@ def test_setup_uses_same_redis_image_for_statefulset_and_restore(
         data_path=str(tmp_path / "data"),
         worker_replicas=1,
         is_update=is_update,
+        registry=registry,
+        username=username,
+        password=password,
         redis_image=redis_image,
+        rabbitmq_image=rabbitmq_image,
     )
     assert terraform.ensure_local_cluster.call_args.args[11] == redis_image
+    assert terraform.ensure_local_cluster.call_args.args[12] == rabbitmq_image
     restore.assert_called_once_with(
         kubectl,
         str(tmp_path / "data"),
         skip_confirmation=is_update,
         redis_image=redis_image,
     )
+    if password:
+        kubectl.create_docker_token.assert_called_once_with(
+            "acrtoken", registry, username, password
+        )
+    else:
+        kubectl.create_docker_token.assert_not_called()
 
 
 def test_redis_volume_pod_renders_default_and_selected_images(
@@ -256,6 +296,7 @@ def test_redis_volume_pod_renders_default_and_selected_images(
     assert kubectl.create_redis_volume_pod(redis_image=CUSTOM_REDIS_IMAGE)
     assert f"image: {REDIS_IMAGE}" in manifests[0]
     assert f"image: {CUSTOM_REDIS_IMAGE}" in manifests[1]
+    assert all("imagePullSecrets:\n  - name: acrtoken" in manifest for manifest in manifests)
 
 
 def test_native_terraform_preserves_service_contracts():
@@ -272,11 +313,15 @@ def test_native_terraform_preserves_service_contracts():
     assert 'name      = "redis-master"' in redis
     assert 'name      = "redis"' in redis
     assert "redis-password" in redis
+    assert "image             = var.redis_image" in redis
     assert 'mount_path = "/data"' in redis
+    assert 'image_pull_secrets {\n          name = "acrtoken"\n        }' in redis
     assert 'name      = "rabbitmq"' in rabbitmq
     assert "rabbitmq-password" in rabbitmq
+    assert "image             = var.rabbitmq_image" in rabbitmq
     assert 'value = "user"' in rabbitmq
     assert 'mount_path = "/var/lib/rabbitmq"' in rabbitmq
+    assert 'image_pull_secrets {\n          name = "acrtoken"\n        }' in rabbitmq
     assert "value: redis-master:6379" in dapr
     assert "key: redis-password" in dapr
     assert "key: rabbitmq-password" in dapr

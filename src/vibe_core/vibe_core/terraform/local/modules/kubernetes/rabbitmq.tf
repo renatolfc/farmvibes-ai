@@ -118,6 +118,10 @@ resource "kubernetes_stateful_set" "rabbitmq" {
         automount_service_account_token  = false
         termination_grace_period_seconds = 120
 
+        image_pull_secrets {
+          name = "acrtoken"
+        }
+
         container {
           name              = "rabbitmq"
           image             = var.rabbitmq_image

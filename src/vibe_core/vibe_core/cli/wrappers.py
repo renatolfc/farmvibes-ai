@@ -50,6 +50,8 @@ kind: Pod
 metadata:
   name: redisvolpod
 spec:
+  imagePullSecrets:
+  - name: acrtoken
   containers:
   - command:
     - tail
