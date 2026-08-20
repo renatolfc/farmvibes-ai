@@ -6,7 +6,7 @@
 import logging
 import mimetypes
 import os
-from typing import Any
+from typing import Any, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -30,7 +30,7 @@ READ_TIMEOUT_S = 30
 LOGGER = logging.getLogger(__name__)
 
 
-def retry_session() -> requests.Session:
+def retry_session(adapter: Optional[HTTPAdapter] = None) -> requests.Session:
     """Create a session with retry support.
 
     This method creates a requests.Session object with retry support
@@ -51,7 +51,9 @@ def retry_session() -> requests.Session:
 
     # Had to ignore the type as urlib is loaded dinamically
     # details here (https://github.com/microsoft/pylance-release/issues/597)
-    adapter = HTTPAdapter(max_retries=retry)  # type: ignore
+    if adapter is None:
+        adapter = HTTPAdapter()  # type: ignore
+    adapter.max_retries = retry
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
@@ -86,6 +88,7 @@ def download_file(
     chunk_size: int = CHUNK_SIZE,
     connect_timeout: float = CONNECT_TIMEOUT_S,
     read_timeout: float = READ_TIMEOUT_S,  # applies per chunk
+    session: Optional[requests.Session] = None,
     **kwargs: Any,
 ) -> str:
     """Download a file from a given URL to the given file path.
@@ -101,15 +104,18 @@ def download_file(
             (defaults to :const:`CONNECT_TIMEOUT_S`).
         read_timeout: Time in seconds for each chunk read from the server
             (defaults to :const:`READ_TIMEOUT_S`).
+        session: Optional preconfigured requests session.
         kwargs: Additional keyword arguments to be passed to the request library call.
 
     Returns:
         Path of the saved file.
     """
-    session = retry_session()
+    download_session = session if session is not None else retry_session()
 
     try:
-        with session.get(url, stream=True, timeout=(connect_timeout, read_timeout), **kwargs) as r:
+        with download_session.get(
+            url, stream=True, timeout=(connect_timeout, read_timeout), **kwargs
+        ) as r:
             r.raise_for_status()
             with open(file_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=chunk_size):

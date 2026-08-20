@@ -6,12 +6,14 @@ import ipaddress
 import mimetypes
 import os
 import pathlib
-import shutil
 import socket
 from dataclasses import fields
 from tempfile import TemporaryDirectory
 from typing import Any, Dict, Type, cast, get_origin
-from urllib.parse import urljoin, urlparse
+from urllib.parse import ParseResult, urlparse
+
+import requests
+from requests.adapters import HTTPAdapter
 
 from vibe_core.data import (
     AssetVibe,
@@ -20,49 +22,91 @@ from vibe_core.data import (
     data_registry,
     gen_hash_id,
 )
-from vibe_core.file_downloader import download_file
-from vibe_core.uri import is_local, local_uri_to_path, uri_to_filename
+from vibe_core.file_downloader import download_file, retry_session
+from vibe_core.uri import uri_to_filename
 
 CHUNK_SIZE_BYTES = 1024 * 1024
 
 ALLOWED_SCHEMES = ("http", "https")
 
 
-def check_url(url: str) -> None:
-    """Reject references that make the worker read local files or reach internal hosts.
-
-    The url comes straight from user input, so without this the op is an arbitrary file
-    read and a full-read SSRF against anything the worker can reach (CWE-918).
-
-    Raises:
-        ValueError: If the URL is not an http(s) URL pointing to a public address.
-    """
+def parse_external_url(url: str) -> ParseResult:
     parsed = urlparse(url)
     if parsed.scheme not in ALLOWED_SCHEMES or not parsed.hostname:
         raise ValueError(
             f"Refusing to fetch reference {url!r}: only {'/'.join(ALLOWED_SCHEMES)} URLs "
             "are supported."
         )
+    return parsed
+
+
+def resolve_public_address(url: str) -> str:
+    """Resolve an external URL to one validated public address."""
+    parsed = parse_external_url(url)
 
     try:
         addresses = socket.getaddrinfo(parsed.hostname, None, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
         raise ValueError(f"Refusing to fetch reference {url!r}: could not resolve host") from e
 
-    for address in addresses:
-        ip = ipaddress.ip_address(address[4][0])
+    resolved = [ipaddress.ip_address(address[4][0]) for address in addresses]
+    if not resolved:
+        raise ValueError(f"Refusing to fetch reference {url!r}: host resolved to no addresses")
+    for ip in resolved:
         if not ip.is_global or ip.is_multicast:
             raise ValueError(
                 f"Refusing to fetch reference {url!r}: host resolves to non-public address {ip}."
             )
+    return str(resolved[0])
 
 
-def check_redirect(response: Any, *args: Any, **kwargs: Any) -> Any:
-    """Validate redirect targets before requests follows them."""
-    location = response.headers.get("location")
-    if response.is_redirect and location:
-        check_url(urljoin(response.url, location))
-    return response
+class PinnedAddressAdapter(HTTPAdapter):
+    """Connect to a validated address without resolving the hostname again."""
+
+    def connection_for_url(self, url: str, proxies: Any = None) -> Any:
+        if proxies:
+            raise ValueError("Proxies are not supported for external references")
+
+        parsed = urlparse(url)
+        address = resolve_public_address(url)
+        pool_kwargs = (
+            {"assert_hostname": parsed.hostname, "server_hostname": parsed.hostname}
+            if parsed.scheme == "https"
+            else {}
+        )
+        return self.poolmanager.connection_from_host(
+            address, port=parsed.port, scheme=parsed.scheme, pool_kwargs=pool_kwargs
+        )
+
+    def _get_connection(
+        self, request: Any, verify: Any, proxies: Any = None, cert: Any = None
+    ) -> Any:
+        return self.connection_for_url(request.url, proxies)
+
+    def get_connection_with_tls_context(
+        self, request: Any, verify: Any, proxies: Any = None, cert: Any = None
+    ) -> Any:
+        return self.connection_for_url(request.url, proxies)
+
+    def get_connection(self, url: str, proxies: Any = None) -> Any:
+        return self.connection_for_url(url, proxies)
+
+    def add_headers(self, request: Any, **kwargs: Any) -> None:
+        super().add_headers(request, **kwargs)
+        parsed = urlparse(request.url)
+        host = cast(str, parsed.hostname)
+        host = f"[{host}]" if ":" in host else host
+        if parsed.port and parsed.port != {"http": 80, "https": 443}[parsed.scheme]:
+            host = f"{host}:{parsed.port}"
+        request.headers["Host"] = host
+
+
+def pinned_session() -> requests.Session:
+    adapter = PinnedAddressAdapter()
+    session = retry_session(adapter)
+    session.mount("", adapter)
+    session.trust_env = False
+    return session
 
 
 def hash_file(filepath: str, chunk_size: int = CHUNK_SIZE_BYTES) -> str:
@@ -102,12 +146,10 @@ class CallbackBuilder:
     def __call__(self):
         def callback(input_ref: ExternalReference) -> Dict[str, DataVibe]:
             # Download the file
-            check_url(input_ref.url)
+            parse_external_url(input_ref.url)
             out_path = os.path.join(self.tmp_dir.name, uri_to_filename(input_ref.url))
-            if is_local(input_ref.url):
-                shutil.copy(local_uri_to_path(input_ref.url), out_path)
-            else:
-                download_file(input_ref.url, out_path, hooks={"response": check_redirect})
+            with pinned_session() as session:
+                download_file(input_ref.url, out_path, session=session)
 
             file_extension = pathlib.Path(out_path).suffix
             if file_extension not in mimetypes.types_map.keys():
