@@ -238,13 +238,16 @@ class LocalCliParser(CliParser):
                 "--max-full-history-runs",
                 type=_non_negative_int,
                 default=100,
-                help="Newest workflow runs to retain with task details and output.",
+                help="Newest workflow runs to retain with task details and output; 0 keeps none.",
             )
             command.add_argument(
                 "--max-compact-history-runs",
                 type=_non_negative_int,
                 default=900,
-                help="Compacted workflow run summaries to retain after the full-history tier.",
+                help=(
+                    "Compacted summaries to retain after the full-history tier; "
+                    "0 deletes older eligible runs."
+                ),
             )
             command.add_argument(
                 "--worker-replicas",

@@ -1235,6 +1235,13 @@ def setup(
     max_compact_history_runs: int = 900,
 ) -> bool:
     log("Updating local cluster" if is_update else "Setting up local cluster")
+    if is_update:
+        log(
+            "Workflow history retention will keep "
+            f"{max_full_history_runs} full runs and {max_compact_history_runs} summaries; "
+            "older eligible terminal runs may be compacted or deleted.",
+            level="warning",
+        )
     os.makedirs(data_path, exist_ok=True)
 
     kubectl = KubectlWrapper(k3d.os_artifacts, k3d.cluster_name)

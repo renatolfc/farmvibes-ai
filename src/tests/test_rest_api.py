@@ -123,23 +123,24 @@ def test_workflow_submission(
 
 
 @patch.object(TerravibesProvider, "submit_work")
-@patch.object(
-    StateStore,
-    "transaction",
-    side_effect=[StateStoreConflictError("simulated conflict"), None],
-)
-@patch.object(
-    StateStore,
-    "retrieve_with_etag",
-    side_effect=[(["older"], "1"), (["concurrent"], "2")],
-)
+@patch.object(StateStore, "transaction")
+@patch.object(StateStore, "retrieve_with_etag")
 def test_workflow_submission_retries_run_index_conflict(
-    _: MagicMock,
+    retrieve_with_etag: MagicMock,
     transaction: MagicMock,
     __: MagicMock,
     workflow_run_config: Dict[str, Any],
     request_client: requests.Session,
 ):
+    concurrent_ids = ["concurrent"]
+    retrieve_with_etag.side_effect = [(["older"], "1"), (concurrent_ids, "2")]
+
+    async def conflict_after_commit(operations: List[Dict[str, Any]]):
+        if transaction.await_count == 1:
+            concurrent_ids.append(operations[0]["value"][-1])
+            raise StateStoreConflictError("simulated ambiguous conflict")
+
+    transaction.side_effect = conflict_after_commit
     response = request_client.post("/v0/runs", json=workflow_run_config)
 
     assert response.status_code == 201

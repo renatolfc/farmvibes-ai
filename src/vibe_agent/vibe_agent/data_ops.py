@@ -95,11 +95,17 @@ class DataOpsManager:
         log_backup_count: int = LOG_BACKUP_COUNT,
         loglevel: Optional[str] = None,
         otel_service_name: str = "",
-        max_full_history_runs: int = DEFAULT_MAX_FULL_HISTORY_RUNS,
-        max_compact_history_runs: int = DEFAULT_MAX_COMPACT_HISTORY_RUNS,
+        max_full_history_runs: Optional[int] = None,
+        max_compact_history_runs: Optional[int] = None,
         scan_redis_workflow_state: bool = False,
     ):
-        if max_full_history_runs < 0 or max_compact_history_runs < 0:
+        if (max_full_history_runs is None) != (max_compact_history_runs is None):
+            raise ValueError("Both workflow history limits must be configured together")
+        if (
+            max_full_history_runs is not None
+            and max_compact_history_runs is not None
+            and (max_full_history_runs < 0 or max_compact_history_runs < 0)
+        ):
             raise ValueError("Workflow history limits must be non-negative")
 
         self.app = App()
@@ -317,6 +323,9 @@ class DataOpsManager:
 
     async def maintain_history(self) -> None:
         """Compact and delete a bounded slice of old workflow history."""
+        if self.max_full_history_runs is None or self.max_compact_history_runs is None:
+            return
+
         async with self.history_maintenance_lock:  # type: ignore
             try:
                 run_ids: List[str] = await self.statestore.retrieve(RUNS_KEY)
@@ -576,8 +585,8 @@ DataOpsConfig = builds(
     max_log_file_bytes=MAX_LOG_FILE_BYTES,
     log_backup_count=LOG_BACKUP_COUNT,
     loglevel=None,
-    max_full_history_runs=DEFAULT_MAX_FULL_HISTORY_RUNS,
-    max_compact_history_runs=DEFAULT_MAX_COMPACT_HISTORY_RUNS,
+    max_full_history_runs=None,
+    max_compact_history_runs=None,
     scan_redis_workflow_state=False,
     otel_service_name="",
 )

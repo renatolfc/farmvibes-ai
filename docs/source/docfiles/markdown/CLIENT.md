@@ -336,6 +336,13 @@ starts and when workflow creation or deletion events are received.
 For local Redis, a prefix scan is used only when an older run record predates the stored task-name
 list needed to remove its legacy task keys.
 
+These defaults are enabled only for local Redis deployments. Updating an existing local cluster
+starts applying them immediately, so the first data-ops startup can compact or delete the oldest
+eligible terminal history. Pass larger limits to `local update` if more existing history must be
+retained. A zero value disables that retention tier rather than maintenance; setting both limits
+to zero deletes every eligible terminal run after cleanup. Non-default limits must be supplied
+again on later `local update` commands; omitted flags reapply the defaults.
+
 For a local cluster, configure both tiers during setup or update:
 
 ```console

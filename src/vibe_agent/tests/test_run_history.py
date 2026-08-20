@@ -108,6 +108,49 @@ def history_manager(
 
 
 @pytest.mark.anyio
+async def test_history_retention_is_disabled_without_both_limits():
+    run_id = str(uuid4())
+    original = run_record(run_id, RunStatus.done, ["task"])
+    state = FakeStateStore(
+        {
+            RUNS_KEY: [run_id],
+            run_id: original,
+            f"{run_id}-task": asdict(RunDetails(status=RunStatus.done)),
+        }
+    )
+    manager = DataOpsManager(Mock(), Mock())
+    manager.statestore = state  # type: ignore
+    manager._init_locks()
+
+    await manager.maintain_history()
+
+    assert state.data[RUNS_KEY] == [run_id]
+    assert state.data[run_id] == original
+    assert f"{run_id}-task" in state.data
+
+    with pytest.raises(ValueError, match="configured together"):
+        DataOpsManager(Mock(), Mock(), max_full_history_runs=1)
+
+
+def test_history_retention_defaults_are_local_only(monkeypatch: pytest.MonkeyPatch):
+    for name in (
+        "STAC_COSMOS_URI_SECRET",
+        "STAC_COSMOS_CONNECTION_KEY_SECRET",
+        "STAC_COSMOS_DATABASE_NAME_SECRET",
+        "STAC_CONTAINER_NAME_SECRET",
+        "BLOB_CONTAINER_NAME",
+    ):
+        monkeypatch.setenv(name, "test")
+
+    from vibe_agent.launch_data_ops import aks_data_ops_config, local_data_ops_config
+
+    assert local_data_ops_config.max_full_history_runs == 100
+    assert local_data_ops_config.max_compact_history_runs == 900
+    assert aks_data_ops_config.max_full_history_runs is None
+    assert aks_data_ops_config.max_compact_history_runs is None
+
+
+@pytest.mark.anyio
 async def test_history_tiers_compact_delete_and_preserve_active_runs():
     run_ids = [str(uuid4()) for _ in range(6)]
     statuses = [

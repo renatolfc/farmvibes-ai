@@ -384,7 +384,9 @@ class TerravibesProvider:
                     if new_run is None:
                         new_id, new_run = self.create_new_run(runConfig, run_ids)
                     else:
-                        run_ids.append(cast(str, new_id))
+                        retry_id = cast(str, new_id)
+                        if retry_id not in run_ids:
+                            run_ids.append(retry_id)
                     try:
                         if runs_etag is None:
                             await self.update_run_state(run_ids, new_run)

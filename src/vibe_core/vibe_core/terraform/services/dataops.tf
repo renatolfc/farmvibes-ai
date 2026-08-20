@@ -9,8 +9,6 @@ locals {
       "/opt/conda/bin/vibe-data-ops",
       "data_ops=${var.startup_type}",
       "data_ops.impl.port=3000",
-      "data_ops.impl.max_full_history_runs=${var.max_full_history_runs}",
-      "data_ops.impl.max_compact_history_runs=${var.max_compact_history_runs}",
     ],
     var.otel_service_name != "" ? [
       "data_ops.impl.otel_service_name=${var.otel_service_name}",
@@ -23,6 +21,8 @@ locals {
       "data_ops.impl.logdir=${var.log_dir}",
       "data_ops.impl.storage.local_path=/mnt/data/stac",
       "data_ops.impl.storage.asset_manager.local_storage_path=/mnt/data/assets",
+      "data_ops.impl.max_full_history_runs=${var.max_full_history_runs}",
+      "data_ops.impl.max_compact_history_runs=${var.max_compact_history_runs}",
     ],
     var.max_log_file_bytes != "" ? [
       "data_ops.impl.max_log_file_bytes=${var.max_log_file_bytes}"
