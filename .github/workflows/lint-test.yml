@@ -130,6 +130,10 @@ jobs:
         ruff check --select D,D401 --ignore D105 --config "lint.pydocstyle.convention = 'google'" src/vibe_core/vibe_core/data/*.py
   local-integration-tests:
     runs-on: ubuntu-latest
+    env:
+      FARMVIBES_AI_CLUSTER_NAME: farmvibes-ai-migration-${{ github.run_id }}-${{ github.run_attempt }}
+      FARMVIBES_AI_STORAGE_PATH: /tmp/farmvibes-ai-migration-${{ github.run_id }}-${{ github.run_attempt }}
+      FARMVIBES_AI_CONFIG_DIR: /tmp/farmvibes-ai-config-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
     - name: Free space before cleanup
       shell: bash
@@ -170,8 +174,12 @@ jobs:
         pip install ./src/vibe_server
         pip install ./src/vibe_lib
         pip install ./src/vibe_dev
-    - name: Actually build cluster
-      run: farmvibes-ai local setup --auto-confirm
+    - name: Add local CLI tools to PATH
+      run: echo "$FARMVIBES_AI_CONFIG_DIR" >> "$GITHUB_PATH"
+    - name: Migrate chart-based local services
+      run: |
+        pytest ./src/tests_local_migration/test_service_migration.py -v -s \
+          --junitxml=migration-test-results.xml
     - name: Cluster status before building local images
       run: |
         bash ./scripts/local-k8s-diagnostics.sh
@@ -196,3 +204,11 @@ jobs:
       if: always()
       run: |
         bash ./scripts/local-k8s-diagnostics.sh
+    - name: Clean migration cluster and state
+      if: always()
+      shell: bash
+      run: |
+        if [ -x "$FARMVIBES_AI_CONFIG_DIR/k3d" ]; then
+          "$FARMVIBES_AI_CONFIG_DIR/k3d" cluster delete "$FARMVIBES_AI_CLUSTER_NAME" || true
+        fi
+        rm -rf "$FARMVIBES_AI_STORAGE_PATH" "$FARMVIBES_AI_CONFIG_DIR"
