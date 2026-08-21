@@ -1767,6 +1767,236 @@ def test_normal_update_preserves_custom_service_images(
     assert ensure.kwargs["is_update"] is True
 
 
+def test_normal_update_refreshes_saved_acr_access_token_before_terraform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _, k3d, kubectl, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = {
+        **effective_config(tmp_path),
+        "registry": "private.azurecr.io/farmai",
+    }
+    stale = local.add_docker_auth(
+        None,
+        "private.azurecr.io",
+        local.ACR_ACCESS_TOKEN_USERNAME,
+        "expired",
+    )
+    events = []
+    azure = Mock()
+
+    def refresh(registry: str) -> str:
+        events.append("refresh")
+        return "fresh"
+
+    azure.request_registry_token.side_effect = refresh
+    terraform.ensure_local_cluster.side_effect = (
+        lambda *args, **kwargs: events.append("terraform")
+    )
+    monkeypatch.setattr(
+        local, "inspect_effective_config", lambda *args: config
+    )
+    monkeypatch.setattr(
+        local, "needs_service_migration", lambda kubectl: False
+    )
+    monkeypatch.setattr(
+        local, "get_pull_secret", lambda kubectl: stale
+    )
+    monkeypatch.setattr(
+        local, "AzureCliWrapper", Mock(return_value=azure)
+    )
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(tmp_path / "data"),
+        is_update=True,
+        worker_replicas=None,
+    )
+    assert events == ["refresh", "terraform"]
+    applied = local.decode_docker_config(
+        kubectl.apply_docker_config_secret.call_args.args[1]
+    )
+    assert (
+        base64.b64decode(
+            applied["auths"]["private.azurecr.io"]["auth"]
+        ).decode()
+        == f"{local.ACR_ACCESS_TOKEN_USERNAME}:fresh"
+    )
+
+
+def test_normal_update_keeps_saved_acr_service_principal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _, k3d, kubectl, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = {
+        **effective_config(tmp_path),
+        "registry": "private.azurecr.io/farmai",
+    }
+    saved = local.add_docker_auth(
+        None, "private.azurecr.io", "service-principal", "valid"
+    )
+    azure = Mock()
+    monkeypatch.setattr(
+        local, "inspect_effective_config", lambda *args: config
+    )
+    monkeypatch.setattr(
+        local, "needs_service_migration", lambda kubectl: False
+    )
+    monkeypatch.setattr(
+        local, "get_pull_secret", lambda kubectl: saved
+    )
+    monkeypatch.setattr(local, "AzureCliWrapper", azure)
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(tmp_path / "data"),
+        is_update=True,
+        worker_replicas=None,
+    )
+    azure.assert_not_called()
+    kubectl.apply_docker_config_secret.assert_called_with(
+        "acrtoken", saved
+    )
+    terraform.ensure_local_cluster.assert_called_once()
+
+
+def test_normal_update_does_not_refresh_non_acr_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _, k3d, kubectl, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = effective_config(tmp_path)
+    saved = local.add_docker_auth(
+        None,
+        "registry.airgap.example",
+        local.ACR_ACCESS_TOKEN_USERNAME,
+        "valid",
+    )
+    azure = Mock()
+    monkeypatch.setattr(
+        local, "inspect_effective_config", lambda *args: config
+    )
+    monkeypatch.setattr(
+        local, "needs_service_migration", lambda kubectl: False
+    )
+    monkeypatch.setattr(
+        local, "get_pull_secret", lambda kubectl: saved
+    )
+    monkeypatch.setattr(local, "AzureCliWrapper", azure)
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(tmp_path / "data"),
+        is_update=True,
+        worker_replicas=None,
+    )
+    azure.assert_not_called()
+    kubectl.apply_docker_config_secret.assert_called_with(
+        "acrtoken", saved
+    )
+    terraform.ensure_local_cluster.assert_called_once()
+
+
+def test_normal_update_preserves_explicit_acr_access_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _, k3d, kubectl, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = {
+        **effective_config(tmp_path),
+        "registry": "private.azurecr.io/farmai",
+    }
+    saved = local.add_docker_auth(
+        None,
+        "private.azurecr.io",
+        local.ACR_ACCESS_TOKEN_USERNAME,
+        "expired",
+    )
+    azure = Mock()
+    monkeypatch.setattr(
+        local, "inspect_effective_config", lambda *args: config
+    )
+    monkeypatch.setattr(
+        local, "needs_service_migration", lambda kubectl: False
+    )
+    monkeypatch.setattr(
+        local, "get_pull_secret", lambda kubectl: saved
+    )
+    monkeypatch.setattr(local, "AzureCliWrapper", azure)
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(tmp_path / "data"),
+        is_update=True,
+        worker_replicas=None,
+        password="current-token",
+    )
+    azure.assert_not_called()
+    applied = local.decode_docker_config(
+        kubectl.apply_docker_config_secret.call_args.args[1]
+    )
+    assert (
+        base64.b64decode(
+            applied["auths"]["private.azurecr.io"]["auth"]
+        ).decode()
+        == f"{local.ACR_ACCESS_TOKEN_USERNAME}:current-token"
+    )
+    terraform.ensure_local_cluster.assert_called_once()
+
+
+def test_normal_update_acr_refresh_failure_precedes_terraform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, k3d, kubectl, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = {
+        **effective_config(tmp_path),
+        "registry": "private.azurecr.io/farmai",
+    }
+    saved = local.add_docker_auth(
+        None,
+        "private.azurecr.io",
+        local.ACR_ACCESS_TOKEN_USERNAME,
+        "expired",
+    )
+    artifacts.check_dependencies.side_effect = RuntimeError(
+        "Azure CLI unavailable"
+    )
+    azure = Mock()
+    monkeypatch.setattr(
+        local, "inspect_effective_config", lambda *args: config
+    )
+    monkeypatch.setattr(
+        local, "needs_service_migration", lambda kubectl: False
+    )
+    monkeypatch.setattr(
+        local, "get_pull_secret", lambda kubectl: saved
+    )
+    monkeypatch.setattr(local, "AzureCliWrapper", azure)
+
+    with pytest.raises(RuntimeError, match="Azure CLI unavailable"):
+        local.setup(
+            k3d,
+            storage_path=str(tmp_path),
+            data_path=str(tmp_path / "data"),
+            is_update=True,
+            worker_replicas=None,
+        )
+    azure.assert_not_called()
+    kubectl.apply_docker_config_secret.assert_not_called()
+    terraform.ensure_local_cluster.assert_not_called()
+
+
 def test_migration_backup_is_immutable_checksummed_and_private(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

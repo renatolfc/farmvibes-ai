@@ -430,16 +430,24 @@ def prepare_registry_auth(
         else:
             dynamic_acr.discard(registry)
 
-    missing_acr = sorted(
+    refresh_acr = {
         registry
         for registry in dynamic_acr
         if registry not in docker_auth_registries(docker_config)
-    )
+    }
+    if not preflight:
+        refresh_acr.update(
+            registry
+            for registry in dynamic_acr
+            if not (password and registry == configured_registry)
+            and docker_auth_username(docker_config, registry)
+            == ACR_ACCESS_TOKEN_USERNAME
+        )
     combined, az = refresh_registry_auth(
-        os_artifacts, docker_config, missing_acr
+        os_artifacts, docker_config, sorted(refresh_acr)
     )
     if preflight:
-        refreshed_acr: Set[str] = set(missing_acr)
+        refreshed_acr: Set[str] = set(refresh_acr)
         while True:
             preflight_secret = (
                 f"{PREFLIGHT_PULL_SECRET}-{secrets.token_hex(6)}"
