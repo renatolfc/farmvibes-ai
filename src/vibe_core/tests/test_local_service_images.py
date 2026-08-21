@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import subprocess
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict
@@ -30,12 +31,26 @@ CUSTOM_RABBITMQ_IMAGE = (
 )
 
 
+def configure_artifacts(
+    artifacts: Mock, tmp_path: Path
+) -> None:
+    artifacts.config_dir = tmp_path / "config"
+    artifacts.private_config_dir = artifacts.config_dir / "private"
+    artifacts.private_config_dir.mkdir(parents=True, exist_ok=True)
+
+
 def test_local_parser_service_image_defaults_and_overrides():
     parser = LocalCliParser("local")
 
     setup_defaults = parser.parse(["setup"])
     assert setup_defaults.redis_image == REDIS_IMAGE
     assert setup_defaults.rabbitmq_image == RABBITMQ_IMAGE
+    assert setup_defaults.enable_telemetry is False
+
+    setup_disabled = parser.parse(["setup", "--disable-telemetry"])
+    assert setup_disabled.enable_telemetry is False
+    setup_enabled = parser.parse(["setup", "--enable-telemetry"])
+    assert setup_enabled.enable_telemetry is True
 
     update_defaults = parser.parse(["update"])
     for field in (
@@ -67,6 +82,13 @@ def test_local_parser_service_image_defaults_and_overrides():
         )
         assert overrides.redis_image == CUSTOM_REDIS_IMAGE
         assert overrides.rabbitmq_image == CUSTOM_RABBITMQ_IMAGE
+
+    assert parser.parse(
+        ["update", "--enable-telemetry"]
+    ).enable_telemetry is True
+    assert parser.parse(
+        ["update", "--disable-telemetry"]
+    ).enable_telemetry is False
 
 
 @pytest.mark.parametrize(("action", "is_update"), [("setup", False), ("update", True)])
@@ -141,6 +163,68 @@ def test_destroy_dispatch_uses_saved_storage_path(
     )
     assert local.dispatch(args)
     assert captured["data_path"] == str(storage_path / local.DATA_SUFFIX)
+
+
+def test_pending_setup_preserves_checkpointed_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    class K3d:
+        def __init__(self, os_artifacts: OSArtifacts, cluster_name: str):
+            self.os_artifacts = os_artifacts
+            self.cluster_name = cluster_name
+
+        @staticmethod
+        def cluster_exists() -> bool:
+            return False
+
+    monkeypatch.setenv(
+        "FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config")
+    )
+    artifacts = OSArtifacts()
+    config = effective_config(tmp_path)
+    state = local.new_redis_migration_state(
+        "test", "k3d-test", "source-uid", config, None, []
+    )
+    local.save_redis_migration_state(artifacts, state)
+    captured = []
+
+    def capture_setup(*args: Any, **kwargs: Any) -> bool:
+        captured.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(OSArtifacts, "check_dependencies", lambda *args, **kwargs: None)
+    monkeypatch.setattr(local, "K3dWrapper", K3d)
+    monkeypatch.setattr(local, "setup", capture_setup)
+
+    parser = LocalCliParser("local")
+    assert local.dispatch(
+        parser.parse(["setup", "--cluster-name", "test"])
+    )
+    args, kwargs = captured[-1]
+    assert args[1] is None
+    assert args[2] is None
+    assert args[3] is None
+    assert args[4] is None
+    assert args[13] is None
+    assert args[14] is None
+    assert kwargs["redis_image"] is None
+    assert kwargs["rabbitmq_image"] is None
+
+    assert local.dispatch(
+        parser.parse(
+            [
+                "setup",
+                "--cluster-name",
+                "test",
+                "--disable-telemetry",
+                "--redis-image",
+                "redis:7.4.10-alpine",
+            ]
+        )
+    )
+    args, kwargs = captured[-1]
+    assert args[14] is False
+    assert kwargs["redis_image"] == "redis:7.4.10-alpine"
 
 
 def test_terraform_wrapper_propagates_service_images(
@@ -556,8 +640,7 @@ def test_setup_uses_service_images_for_workloads_and_restore(
 ):
     monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config"))
     artifacts = Mock(spec=OSArtifacts)
-    artifacts.config_dir = tmp_path / "config"
-    artifacts.config_dir.mkdir()
+    configure_artifacts(artifacts, tmp_path)
     k3d = Mock(spec=K3dWrapper)
     k3d.cluster_name = "test"
     k3d.os_artifacts = artifacts
@@ -577,6 +660,7 @@ def test_setup_uses_service_images_for_workloads_and_restore(
     kubectl.cluster_name = "test"
     kubectl.context_name = "k3d-test"
     kubectl.context.return_value = nullcontext()
+    kubectl.get_cluster_uid.return_value = "cluster-uid"
     terraform = Mock(spec=TerraformWrapper)
     terraform.workspace.return_value = nullcontext()
     terraform.getuid.return_value = 1000
@@ -601,7 +685,17 @@ def test_setup_uses_service_images_for_workloads_and_restore(
     monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: is_update)
     monkeypatch.setattr(local, "verify_to_proceed", lambda message: True)
     monkeypatch.setattr(local, "destroy", Mock(return_value=True))
-    monkeypatch.setattr(local, "get_pull_secret", lambda kubectl: "e30=")
+    monkeypatch.setattr(
+        local,
+        "get_pull_secret",
+        lambda kubectl: (
+            base64.b64encode(
+                b'{"auths":{"registry.airgap.example":{"auth":"opaque"}}}'
+            ).decode()
+            if password
+            else None
+        ),
+    )
     monkeypatch.setattr(local, "backup_redis_data", backup)
     monkeypatch.setattr(local, "KubectlWrapper", Mock(return_value=kubectl))
     monkeypatch.setattr(local, "DaprWrapper", Mock())
@@ -631,13 +725,7 @@ def test_setup_uses_service_images_for_workloads_and_restore(
     assert restore.call_args.kwargs["redis_image"] == redis_image
     if is_update:
         assert restore.call_args.kwargs["dump_file"].startswith("redis-migration-")
-    if password:
-        assert kubectl.create_docker_token.call_args_list == [
-            call("acrtoken", registry, username, password),
-            call("acrtoken", registry, username, password),
-        ]
-    else:
-        kubectl.create_docker_token.assert_not_called()
+    kubectl.create_docker_token.assert_not_called()
     if is_update:
         k3d.create.assert_called_once_with(
             preserved_config["servers"],
@@ -654,8 +742,7 @@ def test_failed_restore_is_retried_by_next_update(
 ):
     monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config"))
     artifacts = Mock(spec=OSArtifacts)
-    artifacts.config_dir = tmp_path / "config"
-    artifacts.config_dir.mkdir()
+    configure_artifacts(artifacts, tmp_path)
     k3d = Mock(spec=K3dWrapper)
     k3d.cluster_name = "test"
     k3d.os_artifacts = artifacts
@@ -674,6 +761,7 @@ def test_failed_restore_is_retried_by_next_update(
     kubectl.os_artifacts = artifacts
     kubectl.cluster_name = "test"
     kubectl.context_name = "k3d-test"
+    kubectl.get_cluster_uid.return_value = "cluster-uid"
     terraform = Mock(spec=TerraformWrapper)
     terraform.workspace.return_value = nullcontext()
     terraform.getuid.return_value = 1000
@@ -709,7 +797,7 @@ def test_failed_restore_is_retried_by_next_update(
     monkeypatch.setattr(local, "TerraformWrapper", Mock(return_value=terraform))
     monkeypatch.setattr(local, "DockerWrapper", Mock(return_value=Mock()))
     monkeypatch.setattr(local, "restore_redis_data", restore)
-    marker_matches = Mock(side_effect=(False, True))
+    marker_matches = Mock(side_effect=(False, True, True))
     monkeypatch.setattr(local, "redis_migration_marker_matches", marker_matches)
     monkeypatch.setattr(local, "clear_redis_migration_marker", Mock())
     monkeypatch.setattr(local, "status", Mock())
@@ -724,7 +812,9 @@ def test_failed_restore_is_retried_by_next_update(
             is_update=True,
             redis_image=CUSTOM_REDIS_IMAGE,
         )
-    state_path = data_path / local.REDIS_MIGRATION_STATE
+    state_path = Path(
+        local.migration_state_path(artifacts, "test")
+    )
     first_state = json.loads(state_path.read_text())
     assert first_state["phase"] == "restoring"
     assert first_state["backup_sha256"]
@@ -784,8 +874,7 @@ def setup_dependencies(
     cluster_exists: bool = True,
 ):
     artifacts = Mock(spec=OSArtifacts)
-    artifacts.config_dir = tmp_path / "config"
-    artifacts.config_dir.mkdir()
+    configure_artifacts(artifacts, tmp_path)
     k3d = Mock(spec=K3dWrapper)
     k3d.cluster_name = "test"
     k3d.os_artifacts = artifacts
@@ -797,6 +886,8 @@ def setup_dependencies(
     kubectl.cluster_name = "test"
     kubectl.context_name = "k3d-test"
     kubectl.context.return_value = nullcontext()
+    kubectl.get_cluster_uid.return_value = "target-uid"
+    kubectl.get_secret_or_none.return_value = None
     terraform = Mock(spec=TerraformWrapper)
     terraform.workspace.return_value = nullcontext()
     terraform.getuid.return_value = 1000
@@ -815,14 +906,23 @@ def setup_dependencies(
 
 
 def save_pending_state(
-    data_path: Path, config: Dict[str, Any], phase: str
+    artifacts: OSArtifacts,
+    data_path: Path,
+    config: Dict[str, Any],
+    phase: str,
 ) -> Dict[str, Any]:
     data_path.mkdir(exist_ok=True)
-    state = local.new_redis_migration_state("test", config, None)
+    state = local.new_redis_migration_state(
+        "test", "k3d-test", "source-uid", config, None, []
+    )
+    if local.MIGRATION_PHASES.index(phase) >= local.MIGRATION_PHASES.index(
+        "cluster_created"
+    ):
+        state["target_cluster_uid"] = "target-uid"
     backup = data_path / state["backup_file"]
     backup.write_bytes(b"immutable-rdb")
     state["backup_sha256"] = local.file_sha256(str(backup))
-    return local.save_redis_migration_state(str(data_path), state, phase)
+    return local.save_redis_migration_state(artifacts, state, phase)
 
 
 def test_migration_preserves_complete_config_and_pull_secret(
@@ -891,12 +991,20 @@ def test_migration_preserves_complete_config_and_pull_secret(
         CUSTOM_RABBITMQ_IMAGE,
     )
     assert ensure.kwargs["is_update"] is False
-    kubectl.apply_docker_config_secret.assert_called_once_with(
-        "acrtoken", docker_config
+    applied = kubectl.apply_docker_config_secret.call_args_list
+    assert len(applied) == 3
+    assert all(
+        invocation.args[0].startswith(local.PREFLIGHT_PULL_SECRET)
+        and invocation.args[1] == docker_config
+        for invocation in applied[:2]
     )
+    assert applied[0].args[0] != applied[1].args[0]
+    assert applied[2] == call("acrtoken", docker_config)
     assert restore.call_args.kwargs["dump_file"].startswith("redis-migration-")
     assert restore.call_args.kwargs["redis_image"] == CUSTOM_REDIS_IMAGE
-    assert not (tmp_path / "data" / local.REDIS_MIGRATION_STATE).exists()
+    assert not Path(
+        local.migration_state_path(k3d.os_artifacts, "test")
+    ).exists()
     assert json.loads(
         (
             tmp_path
@@ -924,7 +1032,7 @@ def test_migration_aborts_before_destroy_when_private_auth_is_unrecoverable(
     monkeypatch.setattr(local, "destroy", destroy)
     monkeypatch.setattr(local, "backup_redis_data", Mock())
 
-    with pytest.raises(RuntimeError, match="Unable to recover credentials"):
+    with pytest.raises(RuntimeError, match="Unable to refresh credentials"):
         local.setup(
             k3d,
             storage_path=str(tmp_path),
@@ -937,12 +1045,158 @@ def test_migration_aborts_before_destroy_when_private_auth_is_unrecoverable(
     local.backup_redis_data.assert_not_called()
 
 
+def test_private_registry_pull_failure_aborts_before_destroy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, k3d, kubectl, _ = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = effective_config(tmp_path)
+    docker_config = base64.b64encode(
+        b'{"auths":{"registry.airgap.example":{"auth":"YmFkOmNyZWRz"}}}'
+    ).decode()
+    destroy = Mock(return_value=True)
+
+    def fail_private_pull(
+        image: str,
+        use_pull_secret: bool,
+        pull_secret_name: str,
+    ):
+        if image == CUSTOM_REDIS_IMAGE:
+            assert use_pull_secret
+            assert pull_secret_name.startswith(
+                local.PREFLIGHT_PULL_SECRET
+            )
+            raise RuntimeError("401 Unauthorized")
+
+    kubectl.preflight_image_pull.side_effect = fail_private_pull
+    monkeypatch.setattr(local, "inspect_effective_config", lambda *args: config)
+    monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: True)
+    monkeypatch.setattr(local, "get_pull_secret", lambda kubectl: docker_config)
+    monkeypatch.setattr(local, "destroy", destroy)
+
+    with pytest.raises(RuntimeError, match="401 Unauthorized"):
+        local.setup(
+            k3d,
+            storage_path=str(tmp_path),
+            data_path=str(tmp_path / "data"),
+            is_update=True,
+            worker_replicas=None,
+        )
+    destroy.assert_not_called()
+    assert not Path(
+        local.migration_state_path(artifacts, "test")
+    ).exists()
+    assert all(
+        invocation.args[0].startswith(local.PREFLIGHT_PULL_SECRET)
+        for invocation in kubectl.apply_docker_config_secret.call_args_list
+    )
+
+
+def test_acr_auth_is_refreshed_and_not_checkpointed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, _, kubectl, _ = setup_dependencies(monkeypatch, tmp_path)
+    artifacts.check_dependencies = Mock()
+    azure = Mock()
+    azure.request_registry_token.side_effect = ("fresh-one", "fresh-two")
+    monkeypatch.setattr(local, "AzureCliWrapper", Mock(return_value=azure))
+    config = {
+        **effective_config(tmp_path),
+        "registry": "private.azurecr.io/farmai",
+    }
+    stale = local.add_docker_auth(
+        None, "private.azurecr.io", "token-user", "expired"
+    )
+    stale = local.add_docker_auth(
+        stale, "registry.airgap.example", "robot", "generic"
+    )
+    stale = local.add_docker_auth(
+        stale, "unrelated.example", "other", "unrelated"
+    )
+    monkeypatch.setattr(local, "get_pull_secret", lambda kubectl: stale)
+
+    stored, acr_registries, _ = local.prepare_registry_auth(
+        kubectl,
+        artifacts,
+        config,
+        None,
+        None,
+        retain_selected_only=True,
+    )
+    assert acr_registries == ["private.azurecr.io"]
+    assert stored is not None
+    assert local.docker_auth_registries(stored) == {
+        "registry.airgap.example"
+    }
+    first_applied = local.decode_docker_config(
+        kubectl.apply_docker_config_secret.call_args.args[1]
+    )
+    first_auth = base64.b64decode(
+        first_applied["auths"]["private.azurecr.io"]["auth"]
+    ).decode()
+    assert first_auth.endswith(":fresh-one")
+
+    local.prepare_registry_auth(
+        kubectl,
+        artifacts,
+        config,
+        None,
+        None,
+        stored,
+        acr_registries,
+        use_existing=False,
+    )
+    second_applied = local.decode_docker_config(
+        kubectl.apply_docker_config_secret.call_args.args[1]
+    )
+    second_auth = base64.b64decode(
+        second_applied["auths"]["private.azurecr.io"]["auth"]
+    ).decode()
+    assert second_auth.endswith(":fresh-two")
+    assert "fresh-one" not in stored
+    assert "fresh-two" not in stored
+
+
+def test_preflight_uses_auth_only_for_covered_registries(
+    tmp_path: Path,
+):
+    kubectl = Mock(spec=KubectlWrapper)
+    config = {
+        **effective_config(tmp_path),
+        "registry": "mcr.microsoft.com/farmai",
+    }
+    docker_config = local.add_docker_auth(
+        None, "registry.airgap.example", "robot", "token"
+    )
+
+    local.preflight_selected_images(
+        kubectl, config, docker_config, []
+    )
+
+    pulls = {
+        invocation.args[0]: invocation.args[1]
+        for invocation in kubectl.preflight_image_pull.call_args_list
+    }
+    assert pulls[CUSTOM_REDIS_IMAGE] is True
+    assert pulls[CUSTOM_RABBITMQ_IMAGE] is True
+    assert all(
+        use_secret is False
+        for image, use_secret in pulls.items()
+        if image.startswith("mcr.microsoft.com/")
+    )
+
+
 def test_pending_created_cluster_runs_fresh_terraform(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    _, k3d, _, terraform = setup_dependencies(monkeypatch, tmp_path)
+    artifacts, k3d, _, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
     config = effective_config(tmp_path)
-    save_pending_state(tmp_path / "data", config, "cluster_created")
+    save_pending_state(
+        artifacts, tmp_path / "data", config, "cluster_created"
+    )
     restore = Mock(return_value=True)
 
     monkeypatch.setattr(local, "inspect_effective_config", lambda *args: {})
@@ -968,12 +1222,81 @@ def test_pending_created_cluster_runs_fresh_terraform(
     )
 
 
+def test_replaced_cluster_replays_restored_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, k3d, kubectl, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = effective_config(tmp_path)
+    save_pending_state(
+        artifacts, tmp_path / "data", config, "restored"
+    )
+    kubectl.get_cluster_uid.return_value = "replacement-uid"
+    restore = Mock(return_value=True)
+
+    monkeypatch.setattr(local, "inspect_effective_config", lambda *args: {})
+    monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: False)
+    monkeypatch.setattr(local, "restore_redis_data", restore)
+    monkeypatch.setattr(local, "redis_migration_marker_matches", lambda *args: True)
+    monkeypatch.setattr(local, "clear_redis_migration_marker", Mock())
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(tmp_path / "data"),
+        is_update=True,
+        worker_replicas=None,
+        redis_image=None,
+        rabbitmq_image=None,
+    )
+    restore.assert_called_once()
+    assert terraform.ensure_local_cluster.call_args.kwargs["is_update"] is False
+    assert not Path(
+        local.migration_state_path(artifacts, "test")
+    ).exists()
+
+
+def test_setup_resumes_pending_migration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, k3d, _, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    save_pending_state(
+        artifacts,
+        tmp_path / "data",
+        effective_config(tmp_path),
+        "cluster_created",
+    )
+    monkeypatch.setattr(local, "inspect_effective_config", lambda *args: {})
+    monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: False)
+    monkeypatch.setattr(local, "restore_redis_data", Mock(return_value=True))
+    monkeypatch.setattr(local, "redis_migration_marker_matches", lambda *args: True)
+    monkeypatch.setattr(local, "clear_redis_migration_marker", Mock())
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(tmp_path / "data"),
+        is_update=False,
+        worker_replicas=None,
+        redis_image=None,
+        rabbitmq_image=None,
+    )
+    assert terraform.ensure_local_cluster.call_args.kwargs["is_update"] is False
+
+
 def test_corrupt_pending_backup_aborts_before_provisioning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    _, k3d, _, terraform = setup_dependencies(monkeypatch, tmp_path)
+    artifacts, k3d, _, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
     config = effective_config(tmp_path)
-    state = save_pending_state(tmp_path / "data", config, "backed_up")
+    state = save_pending_state(
+        artifacts, tmp_path / "data", config, "backed_up"
+    )
     (tmp_path / "data" / state["backup_file"]).write_bytes(b"corrupt")
     monkeypatch.setattr(local, "inspect_effective_config", lambda *args: {})
     monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: False)
@@ -993,19 +1316,35 @@ def test_corrupt_pending_backup_aborts_before_provisioning(
 def test_restored_phase_retry_never_replays_backup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    _, k3d, _, terraform = setup_dependencies(monkeypatch, tmp_path)
-    config = effective_config(tmp_path)
-    save_pending_state(tmp_path / "data", config, "provisioned")
-    restore = Mock(return_value=True)
-    clear_marker = Mock(
-        side_effect=(RuntimeError("injected marker cleanup failure"), None)
+    artifacts, k3d, _, terraform = setup_dependencies(
+        monkeypatch, tmp_path
     )
+    config = effective_config(tmp_path)
+    save_pending_state(
+        artifacts, tmp_path / "data", config, "provisioned"
+    )
+    restore = Mock(return_value=True)
+    clear_marker = Mock()
+    clear_state = local.clear_redis_migration_state
+    clear_attempts = 0
+
+    def fail_clear_once(
+        os_artifacts: OSArtifacts, state: Dict[str, Any]
+    ):
+        nonlocal clear_attempts
+        clear_attempts += 1
+        if clear_attempts == 1:
+            raise RuntimeError("injected state cleanup failure")
+        clear_state(os_artifacts, state)
 
     monkeypatch.setattr(local, "inspect_effective_config", lambda *args: {})
     monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: False)
     monkeypatch.setattr(local, "restore_redis_data", restore)
     monkeypatch.setattr(local, "redis_migration_marker_matches", lambda *args: True)
     monkeypatch.setattr(local, "clear_redis_migration_marker", clear_marker)
+    monkeypatch.setattr(
+        local, "clear_redis_migration_state", fail_clear_once
+    )
 
     setup_args = {
         "storage_path": str(tmp_path),
@@ -1015,17 +1354,111 @@ def test_restored_phase_retry_never_replays_backup(
         "redis_image": None,
         "rabbitmq_image": None,
     }
-    with pytest.raises(RuntimeError, match="injected marker cleanup"):
+    with pytest.raises(RuntimeError, match="injected state cleanup"):
         local.setup(k3d, **setup_args)
     assert json.loads(
-        (tmp_path / "data" / local.REDIS_MIGRATION_STATE).read_text()
+        Path(local.migration_state_path(artifacts, "test")).read_text()
     )["phase"] == "restored"
 
     assert local.setup(k3d, **setup_args)
     assert restore.call_count == 1
-    assert clear_marker.call_count == 2
+    assert clear_marker.call_count == 1
     assert terraform.ensure_local_cluster.call_count == 2
-    assert not (tmp_path / "data" / local.REDIS_MIGRATION_STATE).exists()
+    assert not Path(
+        local.migration_state_path(artifacts, "test")
+    ).exists()
+
+
+def test_retry_overrides_are_checkpointed_before_terraform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, k3d, _, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    config = effective_config(tmp_path)
+    save_pending_state(
+        artifacts, tmp_path / "data", config, "cluster_created"
+    )
+    terraform.ensure_local_cluster.side_effect = (
+        RuntimeError("injected Terraform failure"),
+        None,
+    )
+    new_redis = "redis:7.4.10-alpine"
+    new_registry = "mcr.microsoft.com/farmai"
+
+    monkeypatch.setattr(local, "inspect_effective_config", lambda *args: {})
+    monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: False)
+    monkeypatch.setattr(local, "restore_redis_data", Mock(return_value=True))
+    monkeypatch.setattr(local, "redis_migration_marker_matches", lambda *args: True)
+    monkeypatch.setattr(local, "clear_redis_migration_marker", Mock())
+
+    with pytest.raises(RuntimeError, match="injected Terraform failure"):
+        local.setup(
+            k3d,
+            storage_path=str(tmp_path),
+            data_path=str(tmp_path / "data"),
+            is_update=True,
+            registry=new_registry,
+            image_prefix="retry/",
+            worker_replicas=7,
+            enable_telemetry=False,
+            redis_image=new_redis,
+            rabbitmq_image=None,
+        )
+    state = json.loads(
+        Path(local.migration_state_path(artifacts, "test")).read_text()
+    )
+    assert state["config"]["registry"] == new_registry
+    assert state["config"]["image_prefix"] == "retry/"
+    assert state["config"]["worker_replicas"] == 7
+    assert state["config"]["enable_telemetry"] is False
+    assert state["config"]["redis_image"] == new_redis
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(tmp_path / "data"),
+        is_update=True,
+        registry=None,
+        image_prefix=None,
+        worker_replicas=None,
+        enable_telemetry=None,
+        redis_image=None,
+        rabbitmq_image=None,
+    )
+    retry = terraform.ensure_local_cluster.call_args
+    assert retry.args[1] == new_registry
+    assert retry.args[6] == "retry/"
+    assert retry.args[8] == 7
+    assert retry.args[10] is False
+    assert retry.args[11] == new_redis
+
+
+def test_existing_migration_target_rejects_topology_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, k3d, _, terraform = setup_dependencies(
+        monkeypatch, tmp_path
+    )
+    save_pending_state(
+        artifacts,
+        tmp_path / "data",
+        effective_config(tmp_path),
+        "cluster_created",
+    )
+    monkeypatch.setattr(local, "inspect_effective_config", lambda *args: {})
+    monkeypatch.setattr(local, "needs_service_migration", lambda kubectl: False)
+
+    with pytest.raises(RuntimeError, match="existing k3d topology.*agents"):
+        local.setup(
+            k3d,
+            storage_path=str(tmp_path),
+            data_path=str(tmp_path / "data"),
+            is_update=True,
+            agents=9,
+            worker_replicas=None,
+        )
+    terraform.ensure_local_cluster.assert_not_called()
 
 
 def test_normal_update_preserves_custom_service_images(
@@ -1054,6 +1487,7 @@ def test_normal_update_preserves_custom_service_images(
     ensure = terraform.ensure_local_cluster.call_args
     assert ensure.args[1] == "registry.airgap.example/team"
     assert ensure.args[6] == "farmvibes/"
+    assert ensure.args[10] is True
     assert ensure.args[11:13] == (CUSTOM_REDIS_IMAGE, CUSTOM_RABBITMQ_IMAGE)
     assert ensure.kwargs["is_update"] is True
 
@@ -1063,10 +1497,17 @@ def test_migration_backup_is_immutable_checksummed_and_private(
 ):
     data_path = tmp_path / "data"
     data_path.mkdir()
+    artifacts = Mock(spec=OSArtifacts)
+    configure_artifacts(artifacts, tmp_path)
     state = local.new_redis_migration_state(
-        "test", effective_config(tmp_path), None
+        "test",
+        "k3d-test",
+        "source-uid",
+        effective_config(tmp_path),
+        None,
+        [],
     )
-    state = local.save_redis_migration_state(str(data_path), state)
+    state = local.save_redis_migration_state(artifacts, state)
     calls = 0
 
     def backup(
@@ -1081,36 +1522,199 @@ def test_migration_backup_is_immutable_checksummed_and_private(
         return True
 
     monkeypatch.setattr(local, "backup_redis_data", backup)
-    state = local.ensure_migration_backup(Mock(), str(data_path), state)
+    state = local.ensure_migration_backup(
+        Mock(), artifacts, str(data_path), state
+    )
     backup_path = data_path / state["backup_file"]
     assert state["phase"] == "backed_up"
     assert state["backup_sha256"] == local.file_sha256(str(backup_path))
     assert backup_path.read_bytes() == b"original-rdb"
-    assert (data_path / local.REDIS_MIGRATION_STATE).stat().st_mode & 0o777 == 0o600
+    state_path = Path(local.migration_state_path(artifacts, "test"))
+    assert state_path.stat().st_mode & 0o777 == 0o600
+    assert not (data_path / local.REDIS_MIGRATION_STATE).exists()
     assert backup_path.stat().st_mode & 0o777 == 0o600
 
-    local.ensure_migration_backup(Mock(), str(data_path), state)
+    local.ensure_migration_backup(
+        Mock(), artifacts, str(data_path), state
+    )
     assert calls == 1
     assert backup_path.read_bytes() == b"original-rdb"
 
     backup_path.write_bytes(b"changed")
     with pytest.raises(RuntimeError, match="checksum mismatch"):
-        local.ensure_migration_backup(Mock(), str(data_path), state)
+        local.ensure_migration_backup(
+            Mock(), artifacts, str(data_path), state
+        )
+
+
+def test_migration_credentials_are_outside_shared_storage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv(
+        "FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config")
+    )
+    artifacts = OSArtifacts()
+    data_path = tmp_path / "storage" / "data"
+    data_path.mkdir(parents=True)
+    docker_config = local.add_docker_auth(
+        None, "private.example", "robot", "super-secret"
+    )
+    state = local.new_redis_migration_state(
+        "test",
+        "k3d-test",
+        "source-uid",
+        effective_config(tmp_path / "storage"),
+        docker_config,
+        [],
+    )
+    (data_path / state["backup_file"]).write_bytes(b"immutable-rdb")
+    state["backup_sha256"] = local.file_sha256(
+        str(data_path / state["backup_file"])
+    )
+    local.save_redis_migration_state(artifacts, state, "backed_up")
+
+    assert artifacts.private_config_dir.stat().st_mode & 0o777 == 0o700
+    state_path = Path(local.migration_state_path(artifacts, "test"))
+    assert state_path.stat().st_mode & 0o777 == 0o600
+    assert "super-secret" not in state_path.read_text()
+    assert docker_config in state_path.read_text()
+    assert list(data_path.iterdir()) == [data_path / state["backup_file"]]
+    assert all(
+        b"super-secret" not in path.read_bytes()
+        for path in data_path.iterdir()
+    )
+
+
+def test_migration_state_rejects_other_kubernetes_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv(
+        "FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config")
+    )
+    artifacts = OSArtifacts()
+    state = local.new_redis_migration_state(
+        "test",
+        "k3d-test",
+        "source-uid",
+        effective_config(tmp_path),
+        None,
+        [],
+    )
+    local.save_redis_migration_state(artifacts, state)
+
+    with pytest.raises(ValueError, match="Kubernetes context k3d-test"):
+        local.load_redis_migration_state(
+            artifacts, "test", "k3d-other"
+        )
+
+
+def test_shared_v2_state_is_moved_to_private_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv(
+        "FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config")
+    )
+    artifacts = OSArtifacts()
+    data_path = tmp_path / "storage" / "data"
+    data_path.mkdir(parents=True)
+    docker_config = local.add_docker_auth(
+        None, "private.example", "robot", "secret"
+    )
+    shared_state = {
+        "version": 2,
+        "cluster_name": "test",
+        "phase": "prepared",
+        "migration_id": "migration",
+        "backup_file": "redis-migration-migration.rdb",
+        "marker_key": "marker",
+        "marker_value": "value",
+        "config": effective_config(tmp_path / "storage"),
+        "pull_secret": docker_config,
+    }
+    shared_path = data_path / local.REDIS_MIGRATION_STATE
+    shared_path.write_text(json.dumps(shared_state))
+
+    migrated = local.load_redis_migration_state(
+        artifacts, "test", "k3d-test", str(data_path)
+    )
+    assert migrated is not None
+    assert migrated["version"] == local.REDIS_MIGRATION_STATE_VERSION
+    assert migrated["docker_config"] == docker_config
+    assert not shared_path.exists()
+
+    shared_path.write_text(json.dumps(shared_state))
+    local.load_redis_migration_state(
+        artifacts, "test", "k3d-test", str(data_path)
+    )
+    assert not shared_path.exists()
+
+
+@pytest.mark.parametrize("second_action", ["update", "destroy"])
+def test_retry_and_destroy_are_serialized_per_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    second_action: str,
+):
+    monkeypatch.setenv(
+        "FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config")
+    )
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    count_lock = threading.Lock()
+    calls = []
+
+    def operation(args: Any, os_artifacts: OSArtifacts) -> bool:
+        with count_lock:
+            calls.append(args.action)
+            invocation = len(calls)
+        if invocation == 1:
+            first_entered.set()
+            assert release_first.wait(5)
+        else:
+            second_entered.set()
+        return True
+
+    monkeypatch.setattr(local, "_dispatch_unlocked", operation)
+    update_args = Mock(action="update", cluster_name="test")
+    second_args = Mock(action=second_action, cluster_name="test")
+    update_thread = threading.Thread(
+        target=local.dispatch, args=(update_args,)
+    )
+    second_thread = threading.Thread(
+        target=local.dispatch, args=(second_args,)
+    )
+    update_thread.start()
+    assert first_entered.wait(5)
+    second_thread.start()
+    assert not second_entered.wait(0.2)
+    release_first.set()
+    update_thread.join(5)
+    second_thread.join(5)
+
+    assert not update_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert calls == ["update", second_action]
 
 
 def test_pending_migration_destroy_does_not_replace_backup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     data_path = tmp_path / "data"
+    artifacts = Mock(spec=OSArtifacts)
+    configure_artifacts(artifacts, tmp_path)
     state = save_pending_state(
-        data_path, effective_config(tmp_path), "cluster_created"
+        artifacts,
+        data_path,
+        effective_config(tmp_path),
+        "cluster_created",
     )
     backup_path = data_path / state["backup_file"]
     k3d = Mock(spec=K3dWrapper)
     k3d.cluster_name = "test"
     k3d.cluster_exists.side_effect = (True, False)
     k3d.delete.return_value = True
-    k3d.os_artifacts = Mock(spec=OSArtifacts)
+    k3d.os_artifacts = artifacts
     terraform = Mock()
     monkeypatch.setattr(local, "backup_redis_data", Mock())
     monkeypatch.setattr(local, "TerraformWrapper", Mock(return_value=terraform))
@@ -1118,7 +1722,7 @@ def test_pending_migration_destroy_does_not_replace_backup(
     assert local.destroy(k3d, str(data_path), skip_confirmation=True)
     local.backup_redis_data.assert_not_called()
     assert backup_path.read_bytes() == b"immutable-rdb"
-    assert (data_path / local.REDIS_MIGRATION_STATE).exists()
+    assert Path(local.migration_state_path(artifacts, "test")).exists()
 
 
 def test_redis_backup_uses_posix_shell_and_portable_commands(
@@ -1177,10 +1781,12 @@ def test_docker_config_secret_is_reapplied_without_plaintext(
     monkeypatch: pytest.MonkeyPatch,
 ):
     manifests = []
+    commands = []
     artifacts = Mock(spec=OSArtifacts)
     artifacts.kubectl = "kubectl"
 
     def capture_manifest(command: Any, **kwargs: Any) -> str:
+        commands.append(command)
         manifests.append(json.loads(Path(command[-1]).read_text()))
         return ""
 
@@ -1198,6 +1804,76 @@ def test_docker_config_secret_is_reapplied_without_plaintext(
             "data": {".dockerconfigjson": docker_config},
         }
     ]
+    assert commands[0][0:4] == [
+        "kubectl",
+        "--context",
+        "k3d-test",
+        "apply",
+    ]
+
+
+def test_registry_secret_operations_use_bound_context(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    commands = []
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+
+    def capture(command: Any, **kwargs: Any) -> str:
+        commands.append(command)
+        return ""
+
+    monkeypatch.setattr(wrappers, "execute_cmd", capture)
+    kubectl = KubectlWrapper(artifacts, "test")
+    kubectl.create_docker_token(
+        "acrtoken", "private.example", "robot", "secret"
+    )
+    kubectl.delete_secret("acrtoken")
+    kubectl.get_secret_or_none("acrtoken")
+
+    assert all(
+        command[:3] == ["kubectl", "--context", "k3d-test"]
+        for command in commands
+    )
+
+
+def test_image_preflight_manifest_uses_selected_pull_secret(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    manifests = []
+
+    def execute(command: Any, **kwargs: Any) -> str:
+        if "apply" in command:
+            manifests.append(
+                json.loads(Path(command[-1]).read_text())
+            )
+            return ""
+        if "get" in command:
+            return json.dumps(
+                {
+                    "status": {
+                        "containerStatuses": [
+                            {"imageID": "sha256:image"}
+                        ]
+                    }
+                }
+            )
+        return ""
+
+    monkeypatch.setattr(wrappers, "execute_cmd", execute)
+    KubectlWrapper(artifacts, "test").preflight_image_pull(
+        CUSTOM_REDIS_IMAGE,
+        True,
+        local.PREFLIGHT_PULL_SECRET,
+    )
+
+    assert manifests[0]["spec"]["imagePullSecrets"] == [
+        {"name": local.PREFLIGHT_PULL_SECRET}
+    ]
+    assert manifests[0]["spec"]["containers"][0]["image"] == CUSTOM_REDIS_IMAGE
+    assert manifests[0]["spec"]["automountServiceAccountToken"] is False
 
 
 def test_redis_volume_pod_renders_default_and_selected_images(

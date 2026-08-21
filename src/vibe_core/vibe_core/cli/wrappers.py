@@ -1401,7 +1401,19 @@ class KubectlWrapper:
 
     def get_secret(self, name: str, key: str, cluster_name: str = ""):
         cluster_name = self._actual_cluster_name(cluster_name)
-        cmd = [self.os_artifacts.kubectl, "get", "secret", name, "-o", f'jsonpath="{{{key}}}"']
+        context_name = self.config_context or CONFIG_CONTEXT.format(
+            cluster_name=cluster_name
+        )
+        cmd = [
+            self.os_artifacts.kubectl,
+            "--context",
+            context_name,
+            "get",
+            "secret",
+            name,
+            "-o",
+            f'jsonpath="{{{key}}}"',
+        ]
         result = execute_cmd(
             cmd,
             error_string=f"Unable to get secret {name}",
@@ -1409,6 +1421,25 @@ class KubectlWrapper:
             subprocess_log_level="debug",
         )
         return json.loads(result)
+
+    def get_secret_or_none(self, name: str) -> Optional[Dict[str, Any]]:
+        result = execute_cmd(
+            [
+                self.os_artifacts.kubectl,
+                "--context",
+                self.context_name,
+                "get",
+                "secret",
+                name,
+                "-o",
+                "json",
+                "--ignore-not-found=true",
+            ],
+            check_empty_result=False,
+            error_string=f"Unable to get secret {name}",
+            subprocess_log_level="debug",
+        )
+        return json.loads(result) if result else None
 
     def create_docker_token(self, token_name: str, registry: str, username: str, token: str):
         """Add a secret to the kubernetes cluster.
@@ -1421,6 +1452,8 @@ class KubectlWrapper:
         """
         cmd = [
             self.os_artifacts.kubectl,
+            "--context",
+            self.context_name,
             "create",
             "secret",
             "docker-registry",
@@ -1451,6 +1484,8 @@ class KubectlWrapper:
             execute_cmd(
                 [
                     self.os_artifacts.kubectl,
+                    "--context",
+                    self.context_name,
                     "apply",
                     "-f",
                     manifest_file.name,
@@ -1464,6 +1499,8 @@ class KubectlWrapper:
     def add_secret(self, secret_name: str, secret_value: str):
         cmd = [
             self.os_artifacts.kubectl,
+            "--context",
+            self.context_name,
             "create",
             "secret",
             "generic",
@@ -1480,7 +1517,14 @@ class KubectlWrapper:
         return True
 
     def delete_secret(self, secret_name: str):
-        cmd = [self.os_artifacts.kubectl, "delete", "secret", secret_name]
+        cmd = [
+            self.os_artifacts.kubectl,
+            "--context",
+            self.context_name,
+            "delete",
+            "secret",
+            secret_name,
+        ]
         execute_cmd(
             cmd,
             check_empty_result=False,
@@ -1489,6 +1533,145 @@ class KubectlWrapper:
             subprocess_log_level="debug",
         )
         return True
+
+    def get_cluster_uid(self) -> str:
+        cmd = [
+            self.os_artifacts.kubectl,
+            "--context",
+            self.context_name,
+            "get",
+            "namespace",
+            "kube-system",
+            "-o",
+            "jsonpath={.metadata.uid}",
+        ]
+        return execute_cmd(
+            cmd,
+            error_string="Unable to identify Kubernetes cluster",
+            subprocess_log_level="debug",
+        )
+
+    def preflight_image_pull(
+        self,
+        image: str,
+        use_pull_secret: bool,
+        pull_secret_name: str = "acrtoken",
+        timeout_s: int = 300,
+    ):
+        preflight_id = hashlib.sha256(
+            f"{image}\0{pull_secret_name}".encode()
+        ).hexdigest()[:12]
+        name = f"farmvibes-image-preflight-{preflight_id}"
+        spec: Dict[str, Any] = {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name},
+            "spec": {
+                "automountServiceAccountToken": False,
+                "containers": [
+                    {
+                        "name": "image",
+                        "image": image,
+                        "imagePullPolicy": "Always",
+                    }
+                ],
+                "restartPolicy": "Never",
+                "terminationGracePeriodSeconds": 0,
+            },
+        }
+        if use_pull_secret:
+            spec["spec"]["imagePullSecrets"] = [
+                {"name": pull_secret_name}
+            ]
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as manifest_file:
+            json.dump(spec, manifest_file)
+            manifest_file.flush()
+            execute_cmd(
+                [
+                    self.os_artifacts.kubectl,
+                    "--context",
+                    self.context_name,
+                    "apply",
+                    "-f",
+                    manifest_file.name,
+                ],
+                error_string=f"Unable to preflight image {image}",
+                subprocess_log_level="debug",
+            )
+
+        deadline = time.monotonic() + timeout_s
+        last_status = ""
+        try:
+            while time.monotonic() < deadline:
+                result = execute_cmd(
+                    [
+                        self.os_artifacts.kubectl,
+                        "--context",
+                        self.context_name,
+                        "get",
+                        "pod",
+                        name,
+                        "-o",
+                        "json",
+                    ],
+                    error_string=f"Unable to inspect image preflight for {image}",
+                    subprocess_log_level="debug",
+                )
+                pod = json.loads(result)
+                statuses = pod.get("status", {}).get("containerStatuses", [])
+                if statuses:
+                    if statuses[0].get("imageID"):
+                        return
+                    waiting = statuses[0].get("state", {}).get("waiting", {})
+                    last_status = ": ".join(
+                        value
+                        for value in (waiting.get("reason"), waiting.get("message"))
+                        if value
+                    )
+                    if any(
+                        marker in last_status.lower()
+                        for marker in (
+                            "401 unauthorized",
+                            "authentication required",
+                            "authorization failed",
+                            "denied: requested access",
+                            "403 forbidden",
+                            "insufficient_scope",
+                            "no basic auth credentials",
+                            "pull access denied",
+                        )
+                    ):
+                        raise RuntimeError(
+                            f"Unable to authenticate while pulling {image}: "
+                            f"{last_status}"
+                        )
+                time.sleep(1)
+            raise RuntimeError(
+                f"Timed out pulling {image}"
+                + (f": {last_status}" if last_status else "")
+            )
+        finally:
+            try:
+                execute_cmd(
+                    [
+                        self.os_artifacts.kubectl,
+                        "--context",
+                        self.context_name,
+                        "delete",
+                        "pod",
+                        name,
+                        "--ignore-not-found=true",
+                    ],
+                    check_empty_result=False,
+                    capture_output=False,
+                    subprocess_log_level="debug",
+                )
+            except Exception as error:
+                log(
+                    f"Unable to remove image preflight pod {name}: {error}",
+                    level="warning",
+                )
 
     def get(self, kind: str, name: str, jsonpath: Optional[str] = None):
         cmd = [

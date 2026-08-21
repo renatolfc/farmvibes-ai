@@ -108,7 +108,13 @@ class CliParser(ABC):
         self.commands["add-onnx"].add_argument("model_path", help="Path to ONNX model to add")
 
     def parse(self, args: List[str]):
-        return self.parser.parse_args(args)
+        parsed = self.parser.parse_args(args)
+        parsed._provided_options = {
+            argument.split("=", 1)[0]
+            for argument in args
+            if argument.startswith("--")
+        }
+        return parsed
 
 
 class LocalCliParser(CliParser):
@@ -236,11 +242,19 @@ class LocalCliParser(CliParser):
             )
 
             if os.path.exists(LOCAL_OTEL_PATH):
-                command.add_argument(
+                telemetry = command.add_mutually_exclusive_group()
+                telemetry.add_argument(
                     "--enable-telemetry",
+                    dest="enable_telemetry",
                     default=default(False),
                     action="store_true",
                     help="Enable telemetry for FarmVibes.AI",
+                )
+                telemetry.add_argument(
+                    "--disable-telemetry",
+                    dest="enable_telemetry",
+                    action="store_false",
+                    help="Disable telemetry for FarmVibes.AI",
                 )
 
     def _add_common_flags(self):
