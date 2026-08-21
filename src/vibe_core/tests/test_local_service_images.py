@@ -9,7 +9,7 @@ import subprocess
 import threading
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from unittest.mock import Mock, call
 
 import pytest
@@ -89,6 +89,73 @@ def test_local_parser_service_image_defaults_and_overrides():
     assert parser.parse(
         ["update", "--disable-telemetry"]
     ).enable_telemetry is False
+
+
+@pytest.mark.parametrize("action", ["setup", "update"])
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--redis-i", "redis:7.4"),
+        ("--rabbitmq-i", "rabbitmq:4"),
+        ("--registry-u", "robot"),
+        ("--registry-p", "secret"),
+        ("--image-p", "team/"),
+        ("--enable-t", None),
+        ("--disable-t", None),
+    ],
+)
+def test_local_parser_rejects_abbreviated_long_options(
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+    option: str,
+    value: Optional[str],
+):
+    arguments = [action, option]
+    if value is not None:
+        arguments.append(value)
+
+    with pytest.raises(SystemExit) as error:
+        LocalCliParser("local").parse(arguments)
+
+    assert error.value.code == 2
+    assert option in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("action", ["setup", "update"])
+def test_local_parser_tracks_equals_and_telemetry_options(action: str):
+    parsed = LocalCliParser("local").parse(
+        [
+            action,
+            "--redis-image=redis:7.4.10-alpine",
+            "--disable-telemetry",
+        ]
+    )
+
+    assert parsed.redis_image == "redis:7.4.10-alpine"
+    assert parsed.enable_telemetry is False
+    assert parsed._provided_options == {
+        "--redis-image",
+        "--disable-telemetry",
+    }
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "setup",
+        "create",
+        "new",
+        "update",
+        "upgrade",
+        "up",
+        "destroy",
+        "delete",
+        "remove",
+        "rm",
+    ],
+)
+def test_local_parser_accepts_mutating_subcommand_aliases(action: str):
+    assert LocalCliParser("local").parse([action]).action == action
 
 
 @pytest.mark.parametrize(("action", "is_update"), [("setup", False), ("update", True)])
@@ -217,8 +284,7 @@ def test_pending_setup_preserves_checkpointed_options(
                 "--cluster-name",
                 "test",
                 "--disable-telemetry",
-                "--redis-image",
-                "redis:7.4.10-alpine",
+                "--redis-image=redis:7.4.10-alpine",
             ]
         )
     )
@@ -2154,8 +2220,22 @@ def test_shared_v2_state_is_moved_to_private_config(
     assert not shared_path.exists()
 
 
-@pytest.mark.parametrize("second_action", ["update", "destroy"])
-def test_retry_and_destroy_are_serialized_per_cluster(
+@pytest.mark.parametrize(
+    "second_action",
+    [
+        "setup",
+        "create",
+        "new",
+        "update",
+        "upgrade",
+        "up",
+        "destroy",
+        "delete",
+        "remove",
+        "rm",
+    ],
+)
+def test_mutating_actions_are_serialized_across_clusters(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     second_action: str,
@@ -2181,8 +2261,8 @@ def test_retry_and_destroy_are_serialized_per_cluster(
         return True
 
     monkeypatch.setattr(local, "_dispatch_unlocked", operation)
-    update_args = Mock(action="update", cluster_name="test")
-    second_args = Mock(action=second_action, cluster_name="test")
+    update_args = Mock(action="update", cluster_name="first")
+    second_args = Mock(action=second_action, cluster_name="second")
     update_thread = threading.Thread(
         target=local.dispatch, args=(update_args,)
     )

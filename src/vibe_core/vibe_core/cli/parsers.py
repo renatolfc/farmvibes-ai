@@ -69,10 +69,15 @@ class CliParser(ABC):
         pass
 
     def build_parser(self):
-        parser = argparse.ArgumentParser()
+        parser = argparse.ArgumentParser(allow_abbrev=False)
         subparsers = parser.add_subparsers(dest="action", help="Action to perform", required=True)
         for command, help_text, aliases in self.SUPPORTED_COMMANDS:
-            self.commands[command] = subparsers.add_parser(command, help=help_text, aliases=aliases)
+            self.commands[command] = subparsers.add_parser(
+                command,
+                help=help_text,
+                aliases=aliases,
+                allow_abbrev=False,
+            )
             self.commands[command].add_argument(
                 "--auto-confirm",
                 "-y",
