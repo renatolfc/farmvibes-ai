@@ -440,7 +440,7 @@ def backup_redis_data(
                 marker_key,
                 marker_value,
             ]
-            kubectl.exec(master_pod, command, capture_output=True, censor_command=True)
+            kubectl.exec(master_pod, command, capture_output=False, censor_command=True)
 
             log("Saving redis data dump on the host machine")
             final_path = os.path.join(data_path, dump_file)

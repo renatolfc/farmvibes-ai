@@ -1115,6 +1115,10 @@ def test_redis_backup_uses_posix_shell_and_portable_commands(
     command = kubectl.exec.call_args.args[1]
     assert command[:3] == ["sh", "-c", local.REDIS_BACKUP_COMMAND]
     assert "bash" not in command
+    assert kubectl.exec.call_args.kwargs == {
+        "capture_output": False,
+        "censor_command": True,
+    }
 
     invocations = tmp_path / "redis-cli-invocations"
     redis_cli = tmp_path / "redis-cli"
