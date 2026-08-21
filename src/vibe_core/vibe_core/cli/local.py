@@ -31,6 +31,7 @@ from vibe_core.cli.wrappers import (
     AzureCliWrapper,
     DaprWrapper,
     DockerWrapper,
+    ImagePullAuthenticationError,
     K3dWrapper,
     KubectlWrapper,
     TerraformWrapper,
@@ -46,6 +47,7 @@ REDIS_MIGRATION_STATE = "redis-migration.json"
 REDIS_MIGRATION_COMPLETE_STATE = "redis-migration-complete.json"
 REDIS_MIGRATION_STATE_VERSION = 3
 PREFLIGHT_PULL_SECRET = "farmvibes-image-preflight-auth"
+ACR_ACCESS_TOKEN_USERNAME = "00000000-0000-0000-0000-000000000000"
 LOCAL_CONFIG = "local-config-{cluster_name}.json"
 MIGRATION_PHASES = (
     "prepared",
@@ -201,6 +203,8 @@ def normalize_registry(registry: str) -> str:
 
 
 def image_registry(image: str) -> str:
+    if "/" not in image:
+        return "docker.io"
     first = image.split("/", 1)[0]
     if "." not in first and ":" not in first and first != "localhost":
         return "docker.io"
@@ -235,6 +239,36 @@ def encode_docker_config(config: Dict[str, Any]) -> str:
     return base64.b64encode(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
     ).decode()
+
+
+def docker_auth_username(
+    docker_config: Optional[str], registry: str
+) -> Optional[str]:
+    if not docker_config:
+        return None
+    normalized_registry = normalize_registry(registry)
+    for auth_registry, entry in decode_docker_config(
+        docker_config
+    )["auths"].items():
+        if normalize_registry(auth_registry) != normalized_registry:
+            continue
+        if not isinstance(entry, dict) or not isinstance(
+            entry.get("auth"), str
+        ):
+            raise ValueError(
+                f"Invalid Docker credentials for registry {registry}"
+            )
+        try:
+            decoded = base64.b64decode(
+                entry["auth"], validate=True
+            ).decode()
+            username, _ = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ValueError(
+                f"Invalid Docker credentials for registry {registry}"
+            ) from error
+        return username
+    return None
 
 
 def add_docker_auth(
@@ -324,7 +358,7 @@ def refresh_registry_auth(
         combined = add_docker_auth(
             combined,
             registry,
-            "00000000-0000-0000-0000-000000000000",
+            ACR_ACCESS_TOKEN_USERNAME,
             token,
         )
     return combined, az
@@ -369,62 +403,92 @@ def prepare_registry_auth(
     if docker_config is None and use_existing:
         docker_config = get_pull_secret(kubectl)
 
-    acr = set(acr_registries or [])
     configured_registry = normalize_registry(config["registry"])
     if password:
         docker_config = add_docker_auth(
             docker_config,
             configured_registry,
-            username or "00000000-0000-0000-0000-000000000000",
+            username or ACR_ACCESS_TOKEN_USERNAME,
             password,
         )
-        acr.discard(configured_registry)
 
     selected_registries = {
         image_registry(image) for image in selected_images(config)
     }
-    for registry in selected_registries:
-        if registry.endswith(AZURE_CR_DOMAIN) and not (
-            password and registry == configured_registry
-        ):
-            acr.add(registry)
-    docker_config = remove_docker_auth(docker_config, acr)
+    selected_acr = {
+        registry
+        for registry in selected_registries
+        if registry.endswith(AZURE_CR_DOMAIN)
+    }
+    dynamic_acr = set(acr_registries or []) & selected_acr
+    for registry in selected_acr:
+        auth_username = docker_auth_username(docker_config, registry)
+        if auth_username == ACR_ACCESS_TOKEN_USERNAME:
+            dynamic_acr.add(registry)
+        elif auth_username is None:
+            dynamic_acr.add(registry)
+        else:
+            dynamic_acr.discard(registry)
+
+    missing_acr = sorted(
+        registry
+        for registry in dynamic_acr
+        if registry not in docker_auth_registries(docker_config)
+    )
+    combined, az = refresh_registry_auth(
+        os_artifacts, docker_config, missing_acr
+    )
+    if preflight:
+        refreshed_acr: Set[str] = set(missing_acr)
+        while True:
+            preflight_secret = (
+                f"{PREFLIGHT_PULL_SECRET}-{secrets.token_hex(6)}"
+            )
+            if combined:
+                kubectl.apply_docker_config_secret(
+                    preflight_secret, combined
+                )
+            try:
+                preflight_selected_images(
+                    kubectl,
+                    config,
+                    combined,
+                    [],
+                    preflight_secret,
+                )
+                break
+            except ImagePullAuthenticationError as error:
+                registry = image_registry(error.image)
+                if (
+                    registry not in selected_acr
+                    or docker_auth_username(combined, registry)
+                    != ACR_ACCESS_TOKEN_USERNAME
+                    or registry in refreshed_acr
+                ):
+                    raise
+                combined, refreshed_az = refresh_registry_auth(
+                    os_artifacts, combined, [registry]
+                )
+                az = az or refreshed_az
+                refreshed_acr.add(registry)
+            finally:
+                try:
+                    if combined:
+                        kubectl.delete_secret(preflight_secret)
+                except Exception as error:
+                    log(
+                        "Unable to remove the registry preflight Secret: "
+                        f"{error}",
+                        level="warning",
+                    )
+    docker_config = remove_docker_auth(combined, dynamic_acr)
     if retain_selected_only:
         docker_config = retain_docker_auth(
             docker_config, selected_registries
         )
-    combined, az = refresh_registry_auth(
-        os_artifacts, docker_config, sorted(acr)
-    )
-    if preflight:
-        preflight_secret = (
-            f"{PREFLIGHT_PULL_SECRET}-{secrets.token_hex(6)}"
-        )
-        if combined:
-            kubectl.apply_docker_config_secret(
-                preflight_secret, combined
-            )
-        try:
-            preflight_selected_images(
-                kubectl,
-                config,
-                docker_config,
-                sorted(acr),
-                preflight_secret,
-            )
-        finally:
-            try:
-                if combined:
-                    kubectl.delete_secret(preflight_secret)
-            except Exception as error:
-                log(
-                    "Unable to remove the registry preflight Secret: "
-                    f"{error}",
-                    level="warning",
-                )
     if combined and not preserve_existing_secret:
         kubectl.apply_docker_config_secret("acrtoken", combined)
-    return docker_config, sorted(acr), az
+    return docker_config, sorted(dynamic_acr), az
 
 
 def new_redis_migration_state(
@@ -741,6 +805,36 @@ def clear_redis_migration_state(
     fsync_parent(completed_path)
 
 
+def redis_migration_matches_current_cluster(
+    kubectl: KubectlWrapper, state: Dict[str, Any]
+) -> bool:
+    return (
+        state["phase"] == "restored"
+        and kubectl.get_cluster_uid()
+        == state.get("target_cluster_uid")
+        and redis_migration_marker_matches(kubectl, state)
+    )
+
+
+def complete_redis_migration(
+    kubectl: KubectlWrapper,
+    os_artifacts: OSArtifacts,
+    state: Dict[str, Any],
+):
+    if not redis_migration_matches_current_cluster(kubectl, state):
+        raise RuntimeError(
+            "Cannot complete Redis migration on a changed or unverified cluster"
+        )
+    clear_redis_migration_state(os_artifacts, state)
+    try:
+        clear_redis_migration_marker(kubectl, state)
+    except Exception as error:
+        log(
+            f"Unable to remove completed Redis migration marker: {error}",
+            level="warning",
+        )
+
+
 @contextmanager
 def local_cluster_lock(
     os_artifacts: OSArtifacts, cluster_name: str
@@ -997,7 +1091,15 @@ def destroy(
         data_path,
     )
     pending_migration = migration_state is not None
-    if pending_migration and migration_state is not None:
+    restored_migration = (
+        migration_state is not None
+        and migration_state["phase"] == "restored"
+    )
+    if (
+        pending_migration
+        and not restored_migration
+        and migration_state is not None
+    ):
         verify_migration_backup(data_path, migration_state)
     if not skip_confirmation:
         confirmation = verify_to_proceed(
@@ -1007,12 +1109,25 @@ def destroy(
         if not confirmation:
             log("Aborting destroy due to user confirmation")
             return True
-    confirmation = pending_migration or skip_confirmation or verify_to_proceed(
-        "Do you want to backup workflow state data before destroying the cluster?"
+    fresh_backup_required = False
+    if restored_migration and migration_state is not None:
+        complete_redis_migration(
+            kubectl, k3d.os_artifacts, migration_state
+        )
+        migration_state = None
+        pending_migration = False
+        fresh_backup_required = True
+    confirmation = (
+        fresh_backup_required
+        or pending_migration
+        or skip_confirmation
+        or verify_to_proceed(
+            "Do you want to backup workflow state data before destroying the cluster?"
+        )
     )
     if confirmation and not pending_migration:
         if not backup_redis_data(kubectl, data_path):
-            if require_backup:
+            if require_backup or fresh_backup_required:
                 log("Unable to migrate without a Redis state backup.", level="error")
                 return False
             if not skip_confirmation:
@@ -1281,7 +1396,9 @@ def setup(
             k3d.os_artifacts, migration_state
         )
         if migration_state["phase"] == "restored":
-            if not redis_migration_marker_matches(kubectl, migration_state):
+            if not redis_migration_matches_current_cluster(
+                kubectl, migration_state
+            ):
                 migration_state = save_redis_migration_state(
                     k3d.os_artifacts, migration_state, "cluster_created"
                 )
@@ -1289,16 +1406,9 @@ def setup(
                 save_local_config(
                     k3d.os_artifacts, k3d.cluster_name, effective
                 )
-                clear_redis_migration_state(
-                    k3d.os_artifacts, migration_state
+                complete_redis_migration(
+                    kubectl, k3d.os_artifacts, migration_state
                 )
-                try:
-                    clear_redis_migration_marker(kubectl, migration_state)
-                except Exception as error:
-                    log(
-                        f"Unable to remove completed Redis migration marker: {error}",
-                        level="warning",
-                    )
                 migration_state = None
 
     storage_checked = False
@@ -1574,22 +1684,9 @@ def setup(
             )
 
         save_local_config(k3d.os_artifacts, k3d.cluster_name, effective)
-        if (
-            kubectl.get_cluster_uid()
-            != migration_state.get("target_cluster_uid")
-            or not redis_migration_marker_matches(kubectl, migration_state)
-        ):
-            raise RuntimeError(
-                "Redis migration target changed before completion"
-            )
-        clear_redis_migration_state(k3d.os_artifacts, migration_state)
-        try:
-            clear_redis_migration_marker(kubectl, migration_state)
-        except Exception as error:
-            log(
-                f"Unable to remove completed Redis migration marker: {error}",
-                level="warning",
-            )
+        complete_redis_migration(
+            kubectl, k3d.os_artifacts, migration_state
+        )
     elif not terraform_is_update:
         restored = restore_redis_data(
             kubectl,
@@ -1799,12 +1896,50 @@ def _dispatch_unlocked(
 
     k3d = K3dWrapper(os_artifacts, args.cluster_name)
 
-    storage_path = getattr(args, "storage_path", "")
+    requested_storage_path = getattr(args, "storage_path", "")
+    kubectl = KubectlWrapper(os_artifacts, args.cluster_name)
     pending_state = load_redis_migration_state(
         os_artifacts,
         args.cluster_name,
-        KubectlWrapper(os_artifacts, args.cluster_name).context_name,
+        kubectl.context_name,
     )
+    if pending_state is not None:
+        storage_path = pending_state["config"]["storage_path"]
+    else:
+        storage_path = requested_storage_path
+        if not storage_path:
+            storage_path = load_local_config(
+                os_artifacts, args.cluster_name
+            ).get("storage_path", "")
+            if not storage_path:
+                storage_file = os_artifacts.config_dir / "storage"
+                if storage_file.exists():
+                    log(
+                        f"Loading storage path from {storage_file}",
+                        level="warning",
+                    )
+                    with open(storage_file) as storage:
+                        storage_path = storage.read().strip()
+                else:
+                    storage_path = DEFAULT_STORAGE_PATH
+        if not isinstance(storage_path, str):
+            raise ValueError("Invalid saved storage path")
+        data_path = os.path.join(storage_path, DATA_SUFFIX)
+        pending_state = load_redis_migration_state(
+            os_artifacts,
+            args.cluster_name,
+            kubectl.context_name,
+            data_path,
+        )
+        if (
+            pending_state is not None
+            and pending_state["config"]["storage_path"] != storage_path
+        ):
+            raise ValueError(
+                "Redis migration checkpoint storage path does not match "
+                "its saved deployment configuration"
+            )
+
     if pending_state is not None:
         if args.action in {"setup", "create", "new"}:
             provided = getattr(args, "_provided_options", set())
@@ -1822,22 +1957,8 @@ def _dispatch_unlocked(
                 option = f"--{field.replace('_', '-')}"
                 if option not in provided:
                     setattr(args, field, None)
-        pending_storage = pending_state["config"]["storage_path"]
-        if not storage_path:
+        if not requested_storage_path:
             args.storage_path = None
-        storage_path = pending_storage
-    elif not storage_path:
-        storage_path = load_local_config(
-            os_artifacts, args.cluster_name
-        ).get("storage_path", "")
-        if not storage_path:
-            storage_file = os_artifacts.config_dir / "storage"
-            if storage_file.exists():
-                log(f"Loading storage path from {storage_file}", level="warning")
-                with open(storage_file) as storage:
-                    storage_path = storage.read().strip()
-            else:
-                storage_path = DEFAULT_STORAGE_PATH
     if not isinstance(storage_path, str):
         raise ValueError("Invalid saved storage path")
     if hasattr(args, "storage_path") and pending_state is None:

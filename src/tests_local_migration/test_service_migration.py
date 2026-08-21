@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from vibe_core.cli.constants import RABBITMQ_IMAGE
+from vibe_core.cli.constants import RABBITMQ_IMAGE, REDIS_IMAGE
 from vibe_core.cli.local import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -599,7 +599,7 @@ def test_chart_to_native_redis_migration_preserves_data():
     first_restored_server = server_created(k3d)
     first_restored_target_uid = restored_state["target_cluster_uid"]
 
-    run(destroy_command)
+    assert k3d.delete()
     assert not k3d.cluster_exists()
     assert read_migration_state(private_state_path)["phase"] == "restored"
     second_registry_replacement = replace_registry_after_cluster_create(
@@ -632,23 +632,92 @@ def test_chart_to_native_redis_migration_preserves_data():
     assert server_created(k3d) != first_restored_server
     assert k3d.get_cluster_config() == legacy_config
     run(kubectl_context + ["rollout", "status", "statefulset/redis-master", "--timeout=5m"])
-    new_password = secret_password(kubectl_context, "redis", "redis-password")
+    second_restored_password = secret_password(
+        kubectl_context, "redis", "redis-password"
+    )
     assert redis_command(
-        kubectl_context, new_password, "GET", redis_key
+        kubectl_context, second_restored_password, "GET", redis_key
     ) == redis_value
+    assert resource_field(
+        kubectl_context, "statefulset", "redis-master", IMAGE_PATH
+    ) == migration_redis_image
+    assert resource_field(
+        kubectl_context, "statefulset", "rabbitmq", IMAGE_PATH
+    ) == migration_rabbitmq_image
+    assert docker_config(
+        resource_field(
+            kubectl_context,
+            "secret",
+            "acrtoken",
+            ".data.\\.dockerconfigjson",
+        )
+    ) == docker_config(pull_secret)
     newer_key = f"{redis_key}:newer"
     newer_value = f"newer:{commit}:{run_id}:{run_attempt}"
-    assert redis_command(kubectl_context, new_password, "SET", newer_key, newer_value) == "OK"
+    assert (
+        redis_command(
+            kubectl_context,
+            second_restored_password,
+            "SET",
+            newer_key,
+            newer_value,
+        )
+        == "OK"
+    )
 
     completed_path.rmdir()
-    run(update_without_config)
+    run(destroy_command)
+    normal_backup_path = storage_path / "data" / "redis-dump.rdb"
+    assert not k3d.cluster_exists()
     assert not private_state_path.exists()
     assert backup_path.read_bytes() == original_backup
+    assert normal_backup_path.stat().st_size > 0
+
+    setup_command = [
+        farmvibes_ai,
+        "local",
+        "setup",
+        "--auto-confirm",
+        "--cluster-name",
+        cluster_name,
+        "--servers",
+        "1",
+        "--agents",
+        str(MIGRATION_AGENTS),
+        "--storage-path",
+        str(storage_path),
+        "--registry",
+        MIGRATION_REGISTRY,
+        "--image-prefix",
+        MIGRATION_IMAGE_PREFIX,
+        "--image-tag",
+        MIGRATION_IMAGE_TAG,
+        "--worker-replicas",
+        str(MIGRATION_WORKERS),
+        "--log-level",
+        "INFO",
+        "--max-log-file-bytes",
+        "123456",
+        "--log-backup-count",
+        "2",
+        "--disable-telemetry",
+        "--port",
+        str(MIGRATION_PORT),
+        "--host",
+        DEFAULT_HOST,
+        "--registry-port",
+        str(REGISTRY_PORT),
+        "--redis-image",
+        REDIS_IMAGE,
+        "--rabbitmq-image",
+        RABBITMQ_IMAGE,
+    ]
+    run(setup_command)
     assert k3d.get_cluster_config() == legacy_config
 
     run(kubectl_context + ["rollout", "status", "statefulset/redis-master", "--timeout=5m"])
     run(kubectl_context + ["rollout", "status", "statefulset/rabbitmq", "--timeout=5m"])
-    assert backup_path.stat().st_size > 0
+    assert normal_backup_path.stat().st_size > 0
 
     new_pvc_uid = resource_field(
         kubectl_context, "pvc", "redis-data-redis-master-0", ".metadata.uid"
@@ -656,10 +725,10 @@ def test_chart_to_native_redis_migration_preserves_data():
     assert new_pvc_uid != old_pvc_uid
     assert resource_field(
         kubectl_context, "statefulset", "redis-master", IMAGE_PATH
-    ) == migration_redis_image
+    ) == REDIS_IMAGE
     assert resource_field(
         kubectl_context, "statefulset", "rabbitmq", IMAGE_PATH
-    ) == migration_rabbitmq_image
+    ) == RABBITMQ_IMAGE
     assert resource_field(
         kubectl_context, "statefulset", "redis-master", MANAGED_BY_PATH
     ) != "Helm"
@@ -682,15 +751,24 @@ def test_chart_to_native_redis_migration_preserves_data():
         f"{MIGRATION_REGISTRY}/{MIGRATION_IMAGE_PREFIX}"
         f"worker:{MIGRATION_IMAGE_TAG}"
     )
-    assert docker_config(
-        resource_field(
-            kubectl_context,
-            "secret",
-            "acrtoken",
-            ".data.\\.dockerconfigjson",
+    assert (
+        output(
+            kubectl_context
+            + [
+                "get",
+                "secret",
+                "acrtoken",
+                "--ignore-not-found",
+                "-o",
+                "name",
+            ]
         )
-    ) == docker_config(pull_secret)
+        == ""
+    )
 
+    new_password = secret_password(
+        kubectl_context, "redis", "redis-password"
+    )
     assert new_password != old_password
     restored_value = redis_command(kubectl_context, new_password, "GET", redis_key)
     assert restored_value == redis_value
@@ -716,12 +794,12 @@ def test_chart_to_native_redis_migration_preserves_data():
         "port": MIGRATION_PORT,
         "host": DEFAULT_HOST,
         "registry_port": REGISTRY_PORT,
-        "redis_image": migration_redis_image,
-        "rabbitmq_image": migration_rabbitmq_image,
+        "redis_image": REDIS_IMAGE,
+        "rabbitmq_image": RABBITMQ_IMAGE,
     }
     print(
         "Redis migration survived bad registry auth, interruption, checksum "
-        "rejection, target replacement, and cleanup retry: "
+        "rejection, target replacement, and a restored-phase destroy: "
         f"original={redis_key}:{restored_value} newer={newer_key}:{newer_value} "
         f"old_pvc={old_pvc_uid} new_pvc={new_pvc_uid}"
     )

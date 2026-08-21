@@ -70,6 +70,14 @@ spec:
 """
 
 
+class ImagePullAuthenticationError(RuntimeError):
+    def __init__(self, image: str, status: str):
+        self.image = image
+        super().__init__(
+            f"Unable to authenticate while pulling {image}: {status}"
+        )
+
+
 def on_windows() -> bool:
     return platform.system() == "Windows"
 
@@ -1642,9 +1650,8 @@ class KubectlWrapper:
                             "pull access denied",
                         )
                     ):
-                        raise RuntimeError(
-                            f"Unable to authenticate while pulling {image}: "
-                            f"{last_status}"
+                        raise ImagePullAuthenticationError(
+                            image, last_status
                         )
                 time.sleep(1)
             raise RuntimeError(
