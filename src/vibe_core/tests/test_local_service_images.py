@@ -480,6 +480,10 @@ def test_restore_marker_uses_container_rediscli_auth(
         ["sh", "-c", 'redis-cli --raw GET "$1"', "sh", "migration-key"],
         ["sh", "-c", 'redis-cli DEL "$1" >/dev/null', "sh", "migration-key"],
     ]
+    assert kubectl.exec.call_args_list[1].kwargs == {
+        "capture_output": False,
+        "censor_command": True,
+    }
     assert all("REDIS_PASSWORD" not in " ".join(command) for command in commands)
 
 

@@ -231,6 +231,7 @@ def clear_redis_migration_marker(
                 "sh",
                 state["marker_key"],
             ],
+            capture_output=False,
             censor_command=True,
         )
 
