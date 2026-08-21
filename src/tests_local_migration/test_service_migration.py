@@ -289,16 +289,23 @@ def replace_pull_secret(
 def replace_registry_after_cluster_create(
     artifacts: OSArtifacts,
     k3d: K3dWrapper,
-    old_server_created: str,
+    old_target_uid: str,
 ) -> Tuple[threading.Thread, List[BaseException]]:
     errors: List[BaseException] = []
+    state_path = Path(
+        migration_state_path(artifacts, k3d.cluster_name)
+    )
 
     def replace():
         try:
             wait_until(
                 lambda: (
-                    k3d.cluster_exists()
-                    and server_created(k3d) not in ("", old_server_created)
+                    read_migration_state(state_path).get("phase")
+                    == "cluster_created"
+                    and read_migration_state(state_path).get(
+                        "target_cluster_uid"
+                    )
+                    not in (None, old_target_uid)
                 ),
                 "replacement k3d registry",
             )
@@ -561,8 +568,11 @@ def test_chart_to_native_redis_migration_preserves_data():
     assert not k3d.cluster_exists()
 
     backup_path.write_bytes(original_backup)
+    interrupted_target_uid = read_migration_state(
+        private_state_path
+    )["target_cluster_uid"]
     first_registry_replacement = replace_registry_after_cluster_create(
-        artifacts, k3d, ""
+        artifacts, k3d, interrupted_target_uid
     )
     restore_update = subprocess.Popen(
         update_without_config,
@@ -603,7 +613,7 @@ def test_chart_to_native_redis_migration_preserves_data():
     assert not k3d.cluster_exists()
     assert read_migration_state(private_state_path)["phase"] == "restored"
     second_registry_replacement = replace_registry_after_cluster_create(
-        artifacts, k3d, first_restored_server
+        artifacts, k3d, first_restored_target_uid
     )
     replaced_restore = subprocess.Popen(
         update_without_config,
