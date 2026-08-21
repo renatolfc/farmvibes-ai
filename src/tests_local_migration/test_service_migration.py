@@ -9,12 +9,14 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
-from vibe_core.cli.constants import RABBITMQ_IMAGE, REDIS_IMAGE
+from vibe_core.cli.constants import RABBITMQ_IMAGE
 from vibe_core.cli.local import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    LOCAL_CONFIG,
+    REDIS_MIGRATION_COMPLETE_STATE,
     REDIS_MIGRATION_STATE,
     REGISTRY_PORT,
 )
@@ -26,6 +28,13 @@ MANAGED_BY_PATH = ".metadata.labels.app\\.kubernetes\\.io/managed-by"
 IMAGE_PATH = ".spec.template.spec.containers[0].image"
 MIGRATION_AGENTS = 1
 MIGRATION_PORT = DEFAULT_PORT + 10
+MIGRATION_WORKERS = 2
+MIGRATION_REGISTRY = "mcr.microsoft.com/farmai"
+MIGRATION_IMAGE_PREFIX = "terravibes/"
+MIGRATION_IMAGE_TAG = "12072727496"
+LEGACY_REDIS_IMAGE = "docker.io/library/redis:7.4.10-alpine"
+MIGRATION_REDIS_IMAGE = "redis:7.4.10-bookworm"
+MIGRATION_RABBITMQ_IMAGE = "rabbitmq:4.3.5-management"
 
 
 def run(command: Sequence[str], capture_output: bool = False) -> subprocess.CompletedProcess[str]:
@@ -96,47 +105,15 @@ def wait_until(
             raise AssertionError(
                 f"Update exited with {process.returncode} before {description}"
             )
-        time.sleep(1)
+        time.sleep(0.1)
     raise AssertionError(f"Timed out waiting for {description}")
 
 
-def redis_is_failing(kubectl_context: Sequence[str]) -> bool:
-    result = subprocess.run(
-        list(kubectl_context) + ["get", "pod", "redis-master-0", "-o", "json"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode:
-        return False
-    statuses = json.loads(result.stdout).get("status", {}).get("containerStatuses", [])
-    return bool(
-        statuses
-        and statuses[0].get("restartCount", 0) > 0
-        and not statuses[0].get("ready", False)
-    )
-
-
-def redis_rollout_process(root_pid: int) -> Optional[int]:
-    processes = output(["ps", "-eo", "pid=,ppid=,args="]).splitlines()
-    parents = {}
-    commands = {}
-    for process in processes:
-        fields = process.strip().split(maxsplit=2)
-        if len(fields) == 3:
-            pid, parent, command = fields
-            parents[int(pid)] = int(parent)
-            commands[int(pid)] = command
-
-    for pid, command in commands.items():
-        if "rollout status statefulset/redis-master" not in command:
-            continue
-        ancestor = pid
-        while ancestor in parents and ancestor != root_pid:
-            ancestor = parents[ancestor]
-        if ancestor == root_pid:
-            return pid
-    return None
+def read_migration_state(path: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def test_chart_to_native_redis_migration_preserves_data():
@@ -193,7 +170,7 @@ def test_chart_to_native_redis_migration_preserves_data():
             "--timeout",
             "5m",
             "--set-string",
-            f"redis.image={REDIS_IMAGE}",
+            f"redis.image={LEGACY_REDIS_IMAGE}",
             "--set-string",
             f"rabbitmq.image={RABBITMQ_IMAGE}",
         ]
@@ -213,79 +190,144 @@ def test_chart_to_native_redis_migration_preserves_data():
     )
     old_password = secret_password(kubectl_context, "redis", "redis-password")
     assert redis_command(kubectl_context, old_password, "SET", redis_key, redis_value) == "OK"
+    run(
+        kubectl_context
+        + [
+            "create",
+            "secret",
+            "docker-registry",
+            "acrtoken",
+            "--docker-server=private.invalid",
+            "--docker-username=robot",
+            "--docker-password=test-token",
+            "--docker-email=robot@invalid",
+        ]
+    )
+    pull_secret = resource_field(
+        kubectl_context, "secret", "acrtoken", ".data.\\.dockerconfigjson"
+    )
 
     farmvibes_ai = shutil.which("farmvibes-ai")
     assert farmvibes_ai is not None
-    update_command = [
+    update_without_config = [
         farmvibes_ai,
         "local",
         "update",
         "--auto-confirm",
         "--cluster-name",
         cluster_name,
+    ]
+    first_update_command = update_without_config + [
         "--storage-path",
         str(storage_path),
+        "--registry",
+        MIGRATION_REGISTRY,
+        "--image-prefix",
+        MIGRATION_IMAGE_PREFIX,
+        "--image-tag",
+        MIGRATION_IMAGE_TAG,
         "--worker-replicas",
-        "1",
+        str(MIGRATION_WORKERS),
+        "--log-level",
+        "INFO",
+        "--max-log-file-bytes",
+        "123456",
+        "--log-backup-count",
+        "2",
+        "--redis-image",
+        MIGRATION_REDIS_IMAGE,
+        "--rabbitmq-image",
+        MIGRATION_RABBITMQ_IMAGE,
     ]
-    backup_path = storage_path / "data" / "redis-dump.rdb"
-    first_update = subprocess.Popen(update_command, text=True)
+    destroy_command = [
+        farmvibes_ai,
+        "local",
+        "destroy",
+        "--auto-confirm",
+        "--cluster-name",
+        cluster_name,
+    ]
+    migration_state_path = storage_path / "data" / REDIS_MIGRATION_STATE
+    first_update = subprocess.Popen(
+        first_update_command,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        def cluster_was_recreated() -> bool:
-            created = server_created(k3d)
-            return bool(created and created != old_server_created)
-
         wait_until(
-            cluster_was_recreated,
-            "the recreated native cluster",
+            lambda: read_migration_state(migration_state_path).get("phase")
+            == "cluster_created",
+            "the post-k3d-create migration checkpoint",
             first_update,
         )
-        wait_until(
-            lambda: backup_path.exists() and backup_path.stat().st_size > 0,
-            "the Redis backup",
-            first_update,
-        )
-        original_backup = backup_path.read_bytes()
-        backup_path.write_bytes(b"not a redis dump\n")
-
-        wait_until(
-            lambda: redis_is_failing(kubectl_context),
-            "Redis to reject the corrupt dump",
-            first_update,
-        )
-        assert first_update.poll() is None, (
-            "Migration reported success while Redis was still rejecting dump.rdb"
-        )
-        rollout_pid: Optional[int] = None
-
-        def find_rollout() -> bool:
-            nonlocal rollout_pid
-            rollout_pid = redis_rollout_process(first_update.pid)
-            return rollout_pid is not None
-
-        wait_until(
-            find_rollout,
-            "the Redis readiness rollout check",
-            first_update,
-            timeout_s=60,
-        )
-        assert rollout_pid is not None
-        # A rejected RDB would make the real rollout wait for its full timeout.
-        # Stop only that scoped check after proving the update remains blocked.
-        os.kill(rollout_pid, signal.SIGTERM)
+        os.killpg(first_update.pid, signal.SIGTERM)
         assert first_update.wait(timeout=120) != 0
     finally:
         if first_update.poll() is None:
-            first_update.terminate()
+            os.killpg(first_update.pid, signal.SIGTERM)
             first_update.wait(timeout=30)
 
-    migration_state = storage_path / "data" / REDIS_MIGRATION_STATE
-    assert migration_state.exists()
-    assert k3d.get_cluster_config() == legacy_config
+    migration_state = read_migration_state(migration_state_path)
+    assert migration_state["phase"] == "cluster_created"
+    backup_path = storage_path / "data" / migration_state["backup_file"]
+    original_backup = backup_path.read_bytes()
+    original_checksum = migration_state["backup_sha256"]
+    assert old_server_created != server_created(k3d)
+
+    run(destroy_command)
+    assert not k3d.cluster_exists()
+    assert backup_path.read_bytes() == original_backup
+    assert read_migration_state(migration_state_path)["backup_sha256"] == original_checksum
+
+    backup_path.write_bytes(b"not the immutable redis dump\n")
+    checksum_failure = subprocess.run(
+        update_without_config,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert checksum_failure.returncode != 0
+    assert "checksum mismatch" in (
+        checksum_failure.stdout + checksum_failure.stderr
+    ).lower()
+    assert not k3d.cluster_exists()
 
     backup_path.write_bytes(original_backup)
-    run(update_command)
-    assert not migration_state.exists()
+    completed_path = storage_path / "data" / REDIS_MIGRATION_COMPLETE_STATE
+    restore_update = subprocess.Popen(
+        update_without_config,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        wait_until(
+            lambda: read_migration_state(migration_state_path).get("phase")
+            == "restoring",
+            "the native Redis restore phase",
+            restore_update,
+        )
+        completed_path.mkdir()
+        assert restore_update.wait(timeout=1200) != 0
+    finally:
+        if restore_update.poll() is None:
+            os.killpg(restore_update.pid, signal.SIGTERM)
+            restore_update.wait(timeout=30)
+
+    restored_state = read_migration_state(migration_state_path)
+    assert restored_state["phase"] == "restored"
+    assert restored_state["backup_sha256"] == original_checksum
+    assert k3d.get_cluster_config() == legacy_config
+    completed_path.rmdir()
+
+    run(kubectl_context + ["rollout", "status", "statefulset/redis-master", "--timeout=5m"])
+    new_password = secret_password(kubectl_context, "redis", "redis-password")
+    assert redis_command(kubectl_context, new_password, "GET", redis_key) == redis_value
+    newer_key = f"{redis_key}:newer"
+    newer_value = f"newer:{commit}:{run_id}:{run_attempt}"
+    assert redis_command(kubectl_context, new_password, "SET", newer_key, newer_value) == "OK"
+
+    run(update_without_config)
+    assert not migration_state_path.exists()
     assert backup_path.read_bytes() == original_backup
     assert k3d.get_cluster_config() == legacy_config
 
@@ -299,10 +341,10 @@ def test_chart_to_native_redis_migration_preserves_data():
     assert new_pvc_uid != old_pvc_uid
     assert resource_field(
         kubectl_context, "statefulset", "redis-master", IMAGE_PATH
-    ) == REDIS_IMAGE
+    ) == MIGRATION_REDIS_IMAGE
     assert resource_field(
         kubectl_context, "statefulset", "rabbitmq", IMAGE_PATH
-    ) == RABBITMQ_IMAGE
+    ) == MIGRATION_RABBITMQ_IMAGE
     assert resource_field(
         kubectl_context, "statefulset", "redis-master", MANAGED_BY_PATH
     ) != "Helm"
@@ -316,12 +358,49 @@ def test_chart_to_native_redis_migration_preserves_data():
     assert "legacy-local-services" not in output(
         [helm, "list", "--kube-context", context, "--namespace", "default", "--short"]
     )
+    assert resource_field(
+        kubectl_context, "deployment", "terravibes-worker", ".spec.replicas"
+    ) == str(MIGRATION_WORKERS)
+    assert resource_field(
+        kubectl_context, "deployment", "terravibes-worker", IMAGE_PATH
+    ) == (
+        f"{MIGRATION_REGISTRY}/{MIGRATION_IMAGE_PREFIX}"
+        f"worker:{MIGRATION_IMAGE_TAG}"
+    )
+    assert resource_field(
+        kubectl_context, "secret", "acrtoken", ".data.\\.dockerconfigjson"
+    ) == pull_secret
 
-    new_password = secret_password(kubectl_context, "redis", "redis-password")
     assert new_password != old_password
     restored_value = redis_command(kubectl_context, new_password, "GET", redis_key)
     assert restored_value == redis_value
+    assert redis_command(kubectl_context, new_password, "GET", newer_key) == newer_value
+    saved_config = json.loads(
+        (
+            artifacts.config_dir
+            / LOCAL_CONFIG.format(cluster_name=cluster_name)
+        ).read_text()
+    )
+    assert saved_config == {
+        "servers": 1,
+        "agents": MIGRATION_AGENTS,
+        "storage_path": str(storage_path),
+        "registry": MIGRATION_REGISTRY,
+        "log_level": "INFO",
+        "max_log_file_bytes": 123456,
+        "log_backup_count": 2,
+        "image_tag": MIGRATION_IMAGE_TAG,
+        "image_prefix": MIGRATION_IMAGE_PREFIX,
+        "worker_replicas": MIGRATION_WORKERS,
+        "enable_telemetry": False,
+        "port": MIGRATION_PORT,
+        "host": DEFAULT_HOST,
+        "registry_port": REGISTRY_PORT,
+        "redis_image": MIGRATION_REDIS_IMAGE,
+        "rabbitmq_image": MIGRATION_RABBITMQ_IMAGE,
+    }
     print(
-        "Redis migration retry survived a rejected dump: "
-        f"key={redis_key} value={restored_value} old_pvc={old_pvc_uid} new_pvc={new_pvc_uid}"
+        "Redis migration survived interruption, checksum rejection, and cleanup retry: "
+        f"original={redis_key}:{restored_value} newer={newer_key}:{newer_value} "
+        f"old_pvc={old_pvc_uid} new_pvc={new_pvc_uid}"
     )

@@ -1437,6 +1437,30 @@ class KubectlWrapper:
             subprocess_log_level="debug",
         )
 
+    def apply_docker_config_secret(self, token_name: str, docker_config: str):
+        manifest = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": token_name},
+            "type": "kubernetes.io/dockerconfigjson",
+            "data": {".dockerconfigjson": docker_config},
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as manifest_file:
+            json.dump(manifest, manifest_file)
+            manifest_file.flush()
+            execute_cmd(
+                [
+                    self.os_artifacts.kubectl,
+                    "apply",
+                    "-f",
+                    manifest_file.name,
+                ],
+                error_string="Unable to restore registry credentials",
+                censor_command=True,
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
+
     def add_secret(self, secret_name: str, secret_value: str):
         cmd = [
             self.os_artifacts.kubectl,

@@ -104,6 +104,12 @@ up and restored, but pending RabbitMQ messages and user-added Kubernetes secrets
 are not migrated. Finish or stop active workflows and save any secrets you need
 to re-add before accepting the migration.
 
+The migration keeps an immutable checksummed Redis backup and resumes safely
+after interruption. Omitted `local update` options preserve the cluster's
+effective topology, application and service images, logging, telemetry, worker
+count, storage path, and existing `acrtoken` image-pull credentials; explicit
+options still override the preserved values.
+
 When the installation process finishes, you should see a message similar the
 following.
 
