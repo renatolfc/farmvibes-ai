@@ -2423,6 +2423,29 @@ def test_registry_secret_operations_use_bound_context(
     )
 
 
+def test_registry_secret_json_output_is_censored(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    secret = {
+        "type": "kubernetes.io/dockerconfigjson",
+        "data": {".dockerconfigjson": "reversible-credential"},
+    }
+    invocation = {}
+
+    def capture(command: Any, **kwargs: Any) -> str:
+        invocation.update(kwargs)
+        return json.dumps(secret)
+
+    monkeypatch.setattr(wrappers, "execute_cmd", capture)
+
+    assert KubectlWrapper(artifacts, "test").get_secret_or_none(
+        "acrtoken"
+    ) == secret
+    assert invocation["censor_output"] is True
+
+
 def test_image_preflight_manifest_uses_selected_pull_secret(
     monkeypatch: pytest.MonkeyPatch,
 ):

@@ -1445,6 +1445,7 @@ class KubectlWrapper:
             ],
             check_empty_result=False,
             error_string=f"Unable to get secret {name}",
+            censor_output=True,
             subprocess_log_level="debug",
         )
         return json.loads(result) if result else None
