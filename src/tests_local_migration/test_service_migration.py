@@ -434,6 +434,11 @@ def test_chart_to_native_redis_migration_preserves_data():
 
     farmvibes_ai = shutil.which("farmvibes-ai")
     assert farmvibes_ai is not None
+    wrong_shared_storage = storage_path.parent / f"{cluster_name}-other-storage"
+    (artifacts.config_dir / "storage").write_text(str(wrong_shared_storage))
+    assert not (
+        artifacts.config_dir / LOCAL_CONFIG.format(cluster_name=cluster_name)
+    ).exists()
     update_without_config = [
         farmvibes_ai,
         "local",
@@ -443,8 +448,6 @@ def test_chart_to_native_redis_migration_preserves_data():
         cluster_name,
     ]
     first_update_command = update_without_config + [
-        "--storage-path",
-        str(storage_path),
         "--registry",
         MIGRATION_REGISTRY,
         "--image-prefix",
@@ -527,6 +530,8 @@ def test_chart_to_native_redis_migration_preserves_data():
 
     migration_state = read_migration_state(private_state_path)
     assert migration_state["phase"] == "cluster_created"
+    assert migration_state["config"]["storage_path"] == str(storage_path)
+    assert not (wrong_shared_storage / "data").exists()
     assert private_state_path.stat().st_mode & 0o777 == 0o600
     assert docker_config(migration_state["docker_config"]) == docker_config(
         pull_secret

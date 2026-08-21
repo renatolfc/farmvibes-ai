@@ -1920,16 +1920,37 @@ def _dispatch_unlocked(
                 os_artifacts, args.cluster_name
             ).get("storage_path", "")
             if not storage_path:
-                storage_file = os_artifacts.config_dir / "storage"
-                if storage_file.exists():
-                    log(
-                        f"Loading storage path from {storage_file}",
-                        level="warning",
-                    )
-                    with open(storage_file) as storage:
-                        storage_path = storage.read().strip()
+                if args.action in {
+                    "setup",
+                    "create",
+                    "new",
+                    "update",
+                    "upgrade",
+                    "up",
+                    "destroy",
+                    "delete",
+                    "remove",
+                    "rm",
+                } and k3d.cluster_exists():
+                    try:
+                        storage_path = k3d.get_storage_path()
+                    except ValueError as error:
+                        raise RuntimeError(
+                            f"Unable to determine the storage path for existing "
+                            f"cluster {args.cluster_name}. Pass --storage-path "
+                            "explicitly before setup, update, or destroy."
+                        ) from error
                 else:
-                    storage_path = DEFAULT_STORAGE_PATH
+                    storage_file = os_artifacts.config_dir / "storage"
+                    if storage_file.exists():
+                        log(
+                            f"Loading storage path from {storage_file}",
+                            level="warning",
+                        )
+                        with open(storage_file) as storage:
+                            storage_path = storage.read().strip()
+                    else:
+                        storage_path = DEFAULT_STORAGE_PATH
         if not isinstance(storage_path, str):
             raise ValueError("Invalid saved storage path")
         data_path = os.path.join(storage_path, DATA_SUFFIX)

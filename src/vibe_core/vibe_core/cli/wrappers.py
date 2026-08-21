@@ -13,6 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from functools import partialmethod
+from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -1952,6 +1953,67 @@ class K3dWrapper:
             "host": host,
             "registry_port": int(registry_binding["HostPort"]),
         }
+
+    def get_storage_path(self, cluster_name: Optional[str] = None) -> str:
+        cluster_name = cluster_name or self.cluster_name
+        cluster = self.info(cluster_name)
+        if not cluster:
+            raise ValueError(f"Unable to inspect cluster {cluster_name}")
+
+        raw_nodes = cluster.get("nodes", [])
+        if not isinstance(raw_nodes, list):
+            raise ValueError(f"Unable to inspect cluster {cluster_name} nodes")
+        nodes = [
+            node
+            for node in raw_nodes
+            if isinstance(node, dict)
+            and str(node.get("role", "")).lower() in ("server", "agent")
+        ]
+        try:
+            expected_nodes = int(cluster["serversCount"]) + int(cluster["agentsCount"])
+        except (KeyError, TypeError, ValueError):
+            expected_nodes = 0
+        if not nodes or len(nodes) != expected_nodes:
+            raise ValueError(
+                f"Unable to inspect every server and agent storage bind for cluster "
+                f"{cluster_name}"
+            )
+
+        storage_paths = []
+        mount_marker = ":/mnt"
+        for node in nodes:
+            node_paths = []
+            volumes = node.get("volumes", [])
+            if not isinstance(volumes, list):
+                volumes = []
+            for volume in volumes:
+                if not isinstance(volume, str):
+                    continue
+                marker_index = volume.rfind(mount_marker)
+                if marker_index <= 0:
+                    continue
+                mount_options = volume[marker_index + len(mount_marker) :]
+                if mount_options and not mount_options.startswith(":"):
+                    continue
+                source = volume[:marker_index]
+                if os.path.isabs(source) or PureWindowsPath(source).is_absolute():
+                    node_paths.append(source)
+            if len(node_paths) != 1:
+                raise ValueError(
+                    f"Unable to identify one /mnt host bind for node "
+                    f"{node.get('name', '<unknown>')} in cluster {cluster_name}"
+                )
+            storage_paths.append(node_paths[0])
+
+        normalized_paths = {
+            os.path.normcase(os.path.normpath(storage_path))
+            for storage_path in storage_paths
+        }
+        if len(normalized_paths) != 1:
+            raise ValueError(
+                f"Cluster {cluster_name} uses inconsistent /mnt host binds"
+            )
+        return storage_paths[0]
 
     def create(
         self,

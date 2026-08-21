@@ -134,6 +134,12 @@ class LocalCliParser(CliParser):
 
     def _add_flags(self):
         super()._add_flags()
+        self.commands["destroy"].add_argument(
+            "--storage-path",
+            type=str,
+            default="",
+            help="Path to store data needed for cluster operation and output files",
+        )
         self.commands["add-onnx"].add_argument(
             "--storage-path",
             type=str,

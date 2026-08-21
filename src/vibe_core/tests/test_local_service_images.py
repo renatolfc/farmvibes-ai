@@ -585,6 +585,236 @@ def test_k3d_cluster_config_reads_live_topology(
     }
 
 
+@pytest.mark.parametrize(
+    "storage_path",
+    ["/tmp/farmvibes cluster storage", r"C:\FarmVibes AI\cluster storage"],
+)
+def test_k3d_storage_path_reads_consistent_node_binds(
+    monkeypatch: pytest.MonkeyPatch, storage_path: str
+):
+    cluster = {
+        "name": "test",
+        "serversCount": 2,
+        "agentsCount": 1,
+        "nodes": [
+            {
+                "name": "k3d-test-server-0",
+                "role": "server",
+                "volumes": [
+                    f"{storage_path}:/mnt",
+                    "test-images:/var/lib/rancher/k3s/agent/images",
+                ],
+            },
+            {
+                "name": "k3d-test-server-1",
+                "role": "server",
+                "volumes": [f"{storage_path}:/mnt:rw"],
+            },
+            {
+                "name": "k3d-test-agent-0",
+                "role": "agent",
+                "volumes": [f"{storage_path}:/mnt"],
+            },
+            {"name": "k3d-test-serverlb", "role": "loadbalancer", "volumes": []},
+        ],
+    }
+    monkeypatch.setattr(
+        wrappers,
+        "execute_cmd",
+        lambda *args, **kwargs: json.dumps([cluster]),
+    )
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.k3d = "k3d"
+
+    assert K3dWrapper(artifacts, "test").get_storage_path() == storage_path
+
+
+def test_update_recovers_selected_legacy_cluster_storage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    config_dir = tmp_path / "config"
+    selected_storage = tmp_path / "selected cluster storage"
+    other_storage = tmp_path / "other cluster storage"
+    config_dir.mkdir()
+    (config_dir / "storage").write_text(str(other_storage))
+    clusters = [
+        {
+            "name": "selected",
+            "serversCount": 2,
+            "agentsCount": 1,
+            "nodes": [
+                {
+                    "name": "k3d-selected-server-0",
+                    "role": "server",
+                    "volumes": [f"{selected_storage}:/mnt"],
+                },
+                {
+                    "name": "k3d-selected-server-1",
+                    "role": "server",
+                    "volumes": [f"{selected_storage}:/mnt"],
+                },
+                {
+                    "name": "k3d-selected-agent-0",
+                    "role": "agent",
+                    "volumes": [f"{selected_storage}:/mnt"],
+                },
+            ],
+        },
+        {
+            "name": "other",
+            "serversCount": 1,
+            "agentsCount": 0,
+            "nodes": [
+                {
+                    "name": "k3d-other-server-0",
+                    "role": "server",
+                    "volumes": [f"{other_storage}:/mnt"],
+                }
+            ],
+        },
+    ]
+    captured: Dict[str, Any] = {}
+
+    monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(OSArtifacts, "check_dependencies", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        wrappers,
+        "execute_cmd",
+        lambda *args, **kwargs: json.dumps(clusters),
+    )
+    monkeypatch.setattr(
+        local,
+        "setup",
+        lambda *args, **kwargs: captured.update(
+            {"storage_path": args[3], "data_path": args[12]}
+        )
+        or True,
+    )
+
+    args = LocalCliParser("local").parse(
+        ["update", "--cluster-name", "selected"]
+    )
+    assert local.dispatch(args)
+    assert captured == {
+        "storage_path": str(selected_storage),
+        "data_path": str(selected_storage / local.DATA_SUFFIX),
+    }
+
+
+@pytest.mark.parametrize("action", ["update", "destroy"])
+@pytest.mark.parametrize("mount_problem", ["missing", "ambiguous", "inconsistent"])
+def test_existing_cluster_requires_explicit_storage_when_mount_is_unclear(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    mount_problem: str,
+):
+    config_dir = tmp_path / "config"
+    storage_path = tmp_path / "cluster-storage"
+    other_storage = tmp_path / "other-storage"
+    config_dir.mkdir()
+    (config_dir / "storage").write_text(str(other_storage))
+    agent_volumes = [f"{storage_path}:/mnt"]
+    if mount_problem == "missing":
+        agent_volumes = []
+    elif mount_problem == "ambiguous":
+        agent_volumes.append(f"{other_storage}:/mnt")
+    elif mount_problem == "inconsistent":
+        agent_volumes = [f"{other_storage}:/mnt"]
+    cluster = {
+        "name": "test",
+        "serversCount": 1,
+        "agentsCount": 1,
+        "nodes": [
+            {
+                "name": "k3d-test-server-0",
+                "role": "server",
+                "volumes": [f"{storage_path}:/mnt"],
+            },
+            {
+                "name": "k3d-test-agent-0",
+                "role": "agent",
+                "volumes": agent_volumes,
+            },
+        ],
+    }
+    setup = Mock(return_value=True)
+    destroy = Mock(return_value=True)
+
+    monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(OSArtifacts, "check_dependencies", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        wrappers,
+        "execute_cmd",
+        lambda *args, **kwargs: json.dumps([cluster]),
+    )
+    monkeypatch.setattr(local, "setup", setup)
+    monkeypatch.setattr(local, "destroy", destroy)
+
+    args = LocalCliParser("local").parse(
+        [action, "--cluster-name", "test"]
+    )
+    with pytest.raises(RuntimeError, match="--storage-path"):
+        local.dispatch(args)
+    setup.assert_not_called()
+    destroy.assert_not_called()
+
+
+@pytest.mark.parametrize("action", ["update", "destroy"])
+def test_explicit_storage_path_wins_for_existing_cluster(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
+):
+    config_dir = tmp_path / "config"
+    explicit_storage = tmp_path / "explicit cluster storage"
+    config_dir.mkdir()
+    (config_dir / "storage").write_text(str(tmp_path / "wrong-storage"))
+    clusters = [
+        {
+            "name": "test",
+            "serversCount": 1,
+            "agentsCount": 0,
+            "nodes": [
+                {
+                    "name": "k3d-test-server-0",
+                    "role": "server",
+                    "volumes": [],
+                }
+            ],
+        }
+    ]
+    captured: Dict[str, str] = {}
+
+    monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(OSArtifacts, "check_dependencies", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        wrappers,
+        "execute_cmd",
+        lambda *args, **kwargs: json.dumps(clusters),
+    )
+    monkeypatch.setattr(
+        local,
+        "setup",
+        lambda *args, **kwargs: captured.update(data_path=args[12]) or True,
+    )
+    monkeypatch.setattr(
+        local,
+        "destroy",
+        lambda *args, **kwargs: captured.update(data_path=kwargs["data_path"])
+        or True,
+    )
+
+    args = LocalCliParser("local").parse(
+        [
+            action,
+            "--cluster-name",
+            "test",
+            f"--storage-path={explicit_storage}",
+        ]
+    )
+    assert local.dispatch(args)
+    assert captured["data_path"] == str(explicit_storage / local.DATA_SUFFIX)
+
+
 def test_effective_config_is_reconstructed_from_cluster():
     k3d = Mock(spec=K3dWrapper)
     k3d.get_cluster_config.return_value = {
