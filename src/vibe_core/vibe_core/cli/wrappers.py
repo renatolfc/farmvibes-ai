@@ -1584,8 +1584,7 @@ class K3dWrapper:
                 - agent:*
             - volume: {storage_path}%sregistry:%s
               nodeFilters:
-                - server:*
-                - agent:*
+                - server:0
         registries:
             create:
                 name: {cluster_name}-registry

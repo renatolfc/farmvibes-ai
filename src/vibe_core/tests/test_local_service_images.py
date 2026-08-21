@@ -314,6 +314,31 @@ def test_k3d_cluster_config_reads_live_topology(
     }
 
 
+def test_k3d_does_not_share_containerd_store_across_nodes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    configs = []
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.k3d = "k3d"
+
+    def capture_config(command: Any, **kwargs: Any) -> str:
+        configs.append(Path(command[-1]).read_text())
+        return ""
+
+    monkeypatch.setattr(wrappers, "is_port_free", lambda port: True)
+    monkeypatch.setattr(wrappers, "execute_cmd", capture_config)
+    k3d = K3dWrapper(artifacts, "test")
+
+    assert k3d.create(1, 1, str(tmp_path), 5000, 31108, "127.0.0.1")
+    containerd_section = configs[0].split(
+        f"{tmp_path}/registry:{K3dWrapper.CONTAINERD_IMAGE_PATH}", 1
+    )[1].split("registries:", 1)[0]
+    assert "server:0" in containerd_section
+    assert "server:*" not in containerd_section
+    assert "agent:*" not in containerd_section
+    assert "agents: 1" in configs[0]
+
+
 @pytest.mark.parametrize(
     (
         "is_update",
