@@ -2048,6 +2048,6 @@ def dispatch(args: argparse.Namespace):
         "remove",
         "rm",
     }:
-        with local_cluster_lock(os_artifacts, args.cluster_name):
+        with local_cluster_lock(os_artifacts, "__all_local_clusters__"):
             return _dispatch_unlocked(args, os_artifacts)
     return _dispatch_unlocked(args, os_artifacts)
