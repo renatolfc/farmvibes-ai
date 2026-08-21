@@ -3,6 +3,7 @@
 
 import argparse
 import codecs
+import json
 import os
 import shutil
 from typing import Any, Dict, Optional, Tuple
@@ -36,6 +37,7 @@ DEFAULT_STORAGE_PATH = os.environ.get(
 )
 DATA_SUFFIX = "data"
 REDIS_DUMP = "redis-dump.rdb"
+REDIS_MIGRATION_STATE = "redis-migration.json"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 31108
 REGISTRY_PORT = 5000
@@ -70,14 +72,55 @@ def find_redis_master(kubectl: KubectlWrapper) -> Tuple[str, ...]:
 def needs_service_migration(kubectl: KubectlWrapper) -> bool:
     with kubectl.context():
         for name in ("redis-master", "rabbitmq"):
-            try:
-                stateful_set = kubectl.get("statefulset", name)
-            except ValueError:
+            stateful_set = kubectl.get_or_none("statefulset", name)
+            if stateful_set is None:
                 continue
             labels = stateful_set.get("metadata", {}).get("labels", {})
             if labels.get(MANAGED_BY_LABEL) == "Helm":
                 return True
     return False
+
+
+def load_redis_migration_state(
+    data_path: str, cluster_name: str
+) -> Optional[Dict[str, Any]]:
+    state_path = os.path.join(data_path, REDIS_MIGRATION_STATE)
+    if not os.path.exists(state_path):
+        return None
+    with open(state_path) as state_file:
+        state = json.load(state_file)
+    if state.get("cluster_name") != cluster_name:
+        raise ValueError(
+            f"Redis migration state belongs to cluster {state.get('cluster_name')}"
+        )
+    for key in ("servers", "agents", "port", "registry_port"):
+        if type(state.get(key)) is not int:
+            raise ValueError(f"Invalid Redis migration state field {key}")
+    if not isinstance(state.get("host"), str) or not state["host"]:
+        raise ValueError("Invalid Redis migration state field host")
+    return state
+
+
+def save_redis_migration_state(
+    data_path: str, cluster_name: str, cluster_config: Dict[str, Any]
+) -> Dict[str, Any]:
+    state = {
+        "cluster_name": cluster_name,
+        **{
+            key: cluster_config[key]
+            for key in ("servers", "agents", "port", "host", "registry_port")
+        },
+    }
+    state_path = os.path.join(data_path, REDIS_MIGRATION_STATE)
+    temporary_path = f"{state_path}.tmp"
+    with open(temporary_path, "w") as state_file:
+        json.dump(state, state_file)
+    os.replace(temporary_path, state_path)
+    return state
+
+
+def clear_redis_migration_state(data_path: str):
+    os.remove(os.path.join(data_path, REDIS_MIGRATION_STATE))
 
 
 def backup_redis_data(kubectl: KubectlWrapper, data_path: str) -> bool:
@@ -123,7 +166,7 @@ def restore_redis_data(
     skip_confirmation: bool = False,
     redis_image: str = REDIS_IMAGE,
 ) -> bool:
-    _, redis_master, kind = find_redis_master(kubectl)
+    redis_pod, redis_master, kind = find_redis_master(kubectl)
     backup_path = os.path.join(data_path, REDIS_DUMP)
 
     if not redis_master:
@@ -139,18 +182,57 @@ def restore_redis_data(
         log("Not restoring backup from user instructions.")
         return False
 
+    restore_error: Optional[Exception] = None
+    cleanup_error: Optional[Exception] = None
+    scale_error: Optional[Exception] = None
+    helper_attempted = False
+    scaled_down = False
     with kubectl.context():
         try:
             kubectl.scale(kind, redis_master, 0)
+            scaled_down = True
+            if redis_pod:
+                kubectl.wait_for_delete("pod", redis_pod, timeout_s=300)
+            helper_attempted = True
             if not kubectl.create_redis_volume_pod(redis_image=redis_image):
-                log("Unable to create redis volume pod", level="error")
-                return False
+                raise RuntimeError("Unable to create redis volume pod")
             kubectl.cp(backup_path, "redisvolpod:/mnt/dump.rdb")
-            kubectl.delete("pod", "redisvolpod")
-        finally:
-            kubectl.scale(kind, redis_master, 1)
+        except Exception as error:
+            restore_error = error
 
-        return True
+        if helper_attempted:
+            try:
+                kubectl.delete(
+                    "pod", "redisvolpod", ignore_not_found=True
+                )
+            except Exception as error:
+                cleanup_error = error
+
+        if scaled_down and cleanup_error is None:
+            try:
+                kubectl.scale(kind, redis_master, 1)
+            except Exception as error:
+                scale_error = error
+
+        for message, error in (
+            ("Unable to restore Redis data", restore_error),
+            ("Unable to remove the Redis volume helper pod", cleanup_error),
+            ("Unable to restart Redis after restore", scale_error),
+        ):
+            if error is not None:
+                log(f"{message}: {error}", level="error")
+        if restore_error or cleanup_error or scale_error:
+            return False
+
+        try:
+            kubectl.rollout_status("statefulset", redis_master, timeout_s=600)
+        except Exception as error:
+            log(
+                f"Redis did not become ready after loading the backup: {error}",
+                level="error",
+            )
+            return False
+    return True
 
 
 def destroy_old_registry(
@@ -282,7 +364,17 @@ def setup(
         log(f"Creating data path {data_path}")
         os.makedirs(data_path, exist_ok=True)
 
-    service_migration = False
+    migration_state = None
+    if is_update:
+        try:
+            migration_state = load_redis_migration_state(
+                data_path, k3d.cluster_name
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            log(f"Unable to read Redis migration state: {error}", level="error")
+            return False
+
+    service_migration = migration_state is not None
     if k3d.cluster_exists():
         if is_update and needs_service_migration(
             KubectlWrapper(k3d.os_artifacts, k3d.cluster_name)
@@ -305,6 +397,19 @@ def setup(
                 os.makedirs(storage_path, exist_ok=True)
             if not check_disk_space(storage_path):
                 return False
+            if migration_state is None:
+                try:
+                    migration_state = save_redis_migration_state(
+                        data_path,
+                        k3d.cluster_name,
+                        k3d.get_cluster_config(),
+                    )
+                except (OSError, KeyError, TypeError, ValueError) as error:
+                    log(
+                        f"Unable to preserve the existing cluster configuration: {error}",
+                        level="error",
+                    )
+                    return False
             if not destroy(
                 k3d,
                 data_path=data_path,
@@ -330,8 +435,15 @@ def setup(
                 destroy(k3d, skip_confirmation=True, data_path=data_path)
     else:
         if is_update:
-            log("No existing cluster found to update. Aborting update.", level="error")
-            return False
+            if service_migration:
+                log(
+                    "Resuming the interrupted Redis migration by recreating the cluster.",
+                    level="warning",
+                )
+                is_update = False
+            else:
+                log("No existing cluster found to update. Aborting update.", level="error")
+                return False
 
     if not os.path.exists(storage_path):
         log(f"Creating storage path {storage_path}")
@@ -342,7 +454,21 @@ def setup(
 
     if not is_update:
         log(f"Creating cluster {k3d.cluster_name}")
-        if not k3d.create(servers, agents, storage_path, registry_port, port, host):
+        cluster_config = migration_state or {
+            "servers": servers,
+            "agents": agents,
+            "registry_port": registry_port,
+            "port": port,
+            "host": host,
+        }
+        if not k3d.create(
+            cluster_config["servers"],
+            cluster_config["agents"],
+            storage_path,
+            cluster_config["registry_port"],
+            cluster_config["port"],
+            cluster_config["host"],
+        ):
             log("Unable to create cluster", level="error")
             return False
 
@@ -428,7 +554,7 @@ def setup(
 
     log(f"Cluster {'update' if is_update else 'setup'} complete!")
 
-    if not is_update:
+    if not is_update or service_migration:
         restored = restore_redis_data(
             kubectl,
             data_path,
@@ -436,8 +562,16 @@ def setup(
             redis_image=redis_image,
         )
         if service_migration and not restored:
-            log("Unable to restore Redis workflow state after migration.", level="error")
-            return False
+            message = "Unable to restore Redis workflow state after migration."
+            log(message, level="error")
+            raise RuntimeError(message)
+        if service_migration:
+            try:
+                clear_redis_migration_state(data_path)
+            except OSError as error:
+                message = f"Unable to clear Redis migration state: {error}"
+                log(message, level="error")
+                raise RuntimeError(message)
 
     status(k3d)
     with open(k3d.os_artifacts.config_dir / "storage", "w") as f:

@@ -1384,9 +1384,17 @@ class KubectlWrapper:
             subprocess_log_level="debug",
         )
 
-    def delete(self, kind: str, name: str, cluster_name: str = ""):
+    def delete(
+        self,
+        kind: str,
+        name: str,
+        cluster_name: str = "",
+        ignore_not_found: bool = False,
+    ):
         cluster_name = self._actual_cluster_name(cluster_name)
         cmd = [self.os_artifacts.kubectl, "delete", kind, name]
+        if ignore_not_found:
+            cmd.append("--ignore-not-found=true")
         execute_cmd(
             cmd, error_string=f"Unable to delete {kind} {name}", subprocess_log_level="debug"
         )
@@ -1474,6 +1482,46 @@ class KubectlWrapper:
                 check_empty_result=False,
                 subprocess_log_level="debug",
             )
+        )
+
+    def get_or_none(self, kind: str, name: str):
+        cmd = [
+            self.os_artifacts.kubectl,
+            "get",
+            kind,
+            name,
+            "-o",
+            "json",
+            "--ignore-not-found",
+        ]
+        result = execute_cmd(
+            cmd,
+            error_string=f"Unable to get {kind} {name}",
+            check_empty_result=False,
+            subprocess_log_level="debug",
+        )
+        return json.loads(result) if result else None
+
+    def wait_for_delete(self, kind: str, name: str, timeout_s: int = 120):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.get_or_none(kind, name) is None:
+                return
+            time.sleep(1)
+        raise ValueError(f"Timed out waiting for {kind} {name} to be deleted")
+
+    def rollout_status(self, kind: str, name: str, timeout_s: int = 600):
+        cmd = [
+            self.os_artifacts.kubectl,
+            "rollout",
+            "status",
+            f"{kind}/{name}",
+            f"--timeout={timeout_s}s",
+        ]
+        execute_cmd(
+            cmd,
+            error_string=f"Unable to roll out {kind} {name}",
+            check_empty_result=False,
         )
 
     def restart(self, kind: str, selectors: List[str] = [], name: str = "", cluster_name: str = ""):
@@ -1627,6 +1675,69 @@ class K3dWrapper:
             if cluster["name"] == cluster_name:
                 return cluster
         return {}
+
+    def get_cluster_config(self, cluster_name: Optional[str] = None) -> Dict[str, Any]:
+        cluster_name = cluster_name or self.cluster_name
+        cluster = self.info(cluster_name)
+        if not cluster:
+            raise ValueError(f"Unable to inspect cluster {cluster_name}")
+
+        load_balancer = next(
+            (
+                node
+                for node in cluster.get("nodes", [])
+                if node.get("role", "").lower() == "loadbalancer"
+            ),
+            None,
+        )
+        if load_balancer is None:
+            raise ValueError(
+                f"Unable to inspect FarmVibes.AI port binding for cluster {cluster_name}"
+            )
+        try:
+            api_binding = load_balancer["portMappings"]["80/tcp"][0]
+        except (KeyError, IndexError, TypeError):
+            raise ValueError(
+                f"Unable to inspect FarmVibes.AI port binding for cluster {cluster_name}"
+            )
+
+        cmd = [self.os_artifacts.k3d, "registry", "list", "-o", "json"]
+        result = execute_cmd(
+            cmd,
+            error_string="Unable to list registries",
+            subprocess_log_level="debug",
+        )
+        registry = next(
+            (
+                item
+                for item in json.loads(result)
+                if item.get("runtimeLabels", {}).get("k3d.cluster") == cluster_name
+            ),
+            None,
+        )
+        if registry is None:
+            raise ValueError(
+                f"Unable to inspect registry port binding for cluster {cluster_name}"
+            )
+        try:
+            registry_binding = registry["portMappings"]["5000/tcp"][0]
+        except (KeyError, IndexError, TypeError):
+            raise ValueError(
+                f"Unable to inspect registry port binding for cluster {cluster_name}"
+            )
+
+        host = api_binding["HostIp"]
+        if registry_binding["HostIp"] != host:
+            raise ValueError(
+                f"Cluster {cluster_name} uses different API and registry bind hosts"
+            )
+        return {
+            "servers": int(cluster["serversCount"]),
+            "agents": int(cluster["agentsCount"]),
+            "port": int(api_binding["HostPort"]),
+            "host": host,
+            "registry_port": int(registry_binding["HostPort"]),
+        }
 
     def create(
         self,

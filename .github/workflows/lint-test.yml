@@ -133,7 +133,8 @@ jobs:
     env:
       FARMVIBES_AI_CLUSTER_NAME: fv-mig-${{ github.run_id }}-${{ github.run_attempt }}
       FARMVIBES_AI_STORAGE_PATH: /tmp/farmvibes-ai-migration-${{ github.run_id }}-${{ github.run_attempt }}
-      FARMVIBES_AI_CONFIG_DIR: /tmp/farmvibes-ai-config-${{ github.run_id }}-${{ github.run_attempt }}
+      FARMVIBES_AI_CONFIG_DIR: /tmp/farmvibes-ai-config-${{ github.run_id }}-${{ github.run_attempt }}/farmvibes-ai
+      XDG_CONFIG_HOME: /tmp/farmvibes-ai-config-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
     - name: Free space before cleanup
       shell: bash
@@ -180,6 +181,10 @@ jobs:
       run: |
         pytest ./src/tests_local_migration/test_service_migration.py -v -s \
           --junitxml=migration-test-results.xml
+    - name: Migration diagnostics
+      if: failure()
+      run: |
+        bash ./scripts/local-k8s-diagnostics.sh
     - name: Cluster status before building local images
       run: |
         bash ./scripts/local-k8s-diagnostics.sh
@@ -211,4 +216,4 @@ jobs:
         if [ -x "$FARMVIBES_AI_CONFIG_DIR/k3d" ]; then
           "$FARMVIBES_AI_CONFIG_DIR/k3d" cluster delete "$FARMVIBES_AI_CLUSTER_NAME" || true
         fi
-        sudo rm -rf "$FARMVIBES_AI_STORAGE_PATH" "$FARMVIBES_AI_CONFIG_DIR"
+        sudo rm -rf "$FARMVIBES_AI_STORAGE_PATH" "$XDG_CONFIG_HOME"

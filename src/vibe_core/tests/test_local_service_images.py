@@ -1,13 +1,14 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import json
 import os
 import socket
 import subprocess
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, Optional
-from unittest.mock import Mock
+from typing import Any, Dict
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -143,7 +144,7 @@ def test_legacy_chart_services_require_migration():
         def context(self, cluster_name: str = ""):
             return nullcontext()
 
-        def get(self, kind: str, name: str, jsonpath: Optional[str] = None):
+        def get_or_none(self, kind: str, name: str):
             assert kind == "statefulset"
             return {
                 "metadata": {
@@ -156,6 +157,62 @@ def test_legacy_chart_services_require_migration():
             }
 
     assert local.needs_service_migration(Kubectl.__new__(Kubectl)) is True
+
+
+def test_missing_legacy_services_are_not_migration():
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.return_value = None
+
+    assert local.needs_service_migration(kubectl) is False
+    assert kubectl.get_or_none.call_args_list == [
+        call("statefulset", "redis-master"),
+        call("statefulset", "rabbitmq"),
+    ]
+
+
+def test_service_migration_detection_propagates_kubectl_failures():
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.side_effect = ValueError("Unable to get statefulset redis-master")
+
+    with pytest.raises(ValueError):
+        local.needs_service_migration(kubectl)
+
+
+def test_kubectl_get_or_none_only_ignores_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    commands = []
+
+    def missing(command: Any, **kwargs: Any) -> str:
+        commands.append(command)
+        return ""
+
+    monkeypatch.setattr(wrappers, "execute_cmd", missing)
+    kubectl = KubectlWrapper(artifacts, "test")
+    assert kubectl.get_or_none("statefulset", "redis-master") is None
+    assert commands == [
+        [
+            "kubectl",
+            "get",
+            "statefulset",
+            "redis-master",
+            "-o",
+            "json",
+            "--ignore-not-found",
+        ]
+    ]
+
+    monkeypatch.setattr(
+        wrappers,
+        "execute_cmd",
+        Mock(side_effect=ValueError("Unable to get statefulset redis-master")),
+    )
+    with pytest.raises(ValueError):
+        kubectl.get_or_none("statefulset", "redis-master")
 
 
 def test_restore_redis_data_forwards_selected_image(
@@ -178,6 +235,83 @@ def test_restore_redis_data_forwards_selected_image(
         redis_image=CUSTOM_REDIS_IMAGE,
     )
     kubectl.create_redis_volume_pod.assert_called_once_with(redis_image=CUSTOM_REDIS_IMAGE)
+    assert kubectl.method_calls == [
+        call.context(),
+        call.scale("StatefulSet", "redis-master", 0),
+        call.wait_for_delete("pod", "redis-master-0", timeout_s=300),
+        call.create_redis_volume_pod(redis_image=CUSTOM_REDIS_IMAGE),
+        call.cp(str(tmp_path / local.REDIS_DUMP), "redisvolpod:/mnt/dump.rdb"),
+        call.delete("pod", "redisvolpod", ignore_not_found=True),
+        call.scale("StatefulSet", "redis-master", 1),
+        call.rollout_status("statefulset", "redis-master", timeout_s=600),
+    ]
+
+
+def test_restore_redis_data_fails_until_redis_is_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.create_redis_volume_pod.return_value = True
+    kubectl.rollout_status.side_effect = ValueError("Redis failed to load dump.rdb")
+    (tmp_path / local.REDIS_DUMP).write_bytes(b"corrupt")
+    monkeypatch.setattr(
+        local,
+        "find_redis_master",
+        lambda kubectl: ("redis-master-0", "redis-master", "StatefulSet"),
+    )
+
+    assert not local.restore_redis_data(
+        kubectl,
+        str(tmp_path),
+        skip_confirmation=True,
+        redis_image=CUSTOM_REDIS_IMAGE,
+    )
+    kubectl.delete.assert_called_once_with(
+        "pod", "redisvolpod", ignore_not_found=True
+    )
+    kubectl.scale.assert_called_with("StatefulSet", "redis-master", 1)
+    kubectl.rollout_status.assert_called_once_with(
+        "statefulset", "redis-master", timeout_s=600
+    )
+
+
+def test_k3d_cluster_config_reads_live_topology(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cluster = {
+        "name": "test",
+        "serversCount": 2,
+        "agentsCount": 1,
+        "nodes": [
+            {
+                "role": "loadbalancer",
+                "portMappings": {
+                    "80/tcp": [{"HostIp": "127.0.0.2", "HostPort": "32108"}]
+                },
+            }
+        ],
+    }
+    registries = [
+        {
+            "runtimeLabels": {"k3d.cluster": "test"},
+            "portMappings": {
+                "5000/tcp": [{"HostIp": "127.0.0.2", "HostPort": "5500"}]
+            },
+        }
+    ]
+    outputs = iter((json.dumps([cluster]), json.dumps(registries)))
+    monkeypatch.setattr(wrappers, "execute_cmd", lambda *args, **kwargs: next(outputs))
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.k3d = "k3d"
+
+    assert K3dWrapper(artifacts, "test").get_cluster_config() == {
+        "servers": 2,
+        "agents": 1,
+        "port": 32108,
+        "host": "127.0.0.2",
+        "registry_port": 5500,
+    }
 
 
 @pytest.mark.parametrize(
@@ -232,6 +366,14 @@ def test_setup_uses_service_images_for_workloads_and_restore(
     k3d.CONTAINERD_IMAGE_PATH = "/images"
     k3d.cluster_exists.return_value = cluster_exists
     k3d.create.return_value = True
+    preserved_config = {
+        "servers": 2,
+        "agents": 1,
+        "port": 32108,
+        "host": "127.0.0.2",
+        "registry_port": 5500,
+    }
+    k3d.get_cluster_config.return_value = preserved_config
     kubectl = Mock(spec=KubectlWrapper)
     kubectl.os_artifacts = artifacts
     kubectl.cluster_name = "test"
@@ -278,6 +420,110 @@ def test_setup_uses_service_images_for_workloads_and_restore(
         )
     else:
         kubectl.create_docker_token.assert_not_called()
+    if is_update:
+        k3d.create.assert_called_once_with(
+            preserved_config["servers"],
+            preserved_config["agents"],
+            str(tmp_path),
+            preserved_config["registry_port"],
+            preserved_config["port"],
+            preserved_config["host"],
+        )
+
+
+def test_failed_restore_is_retried_by_next_update(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(tmp_path / "config"))
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.config_dir = tmp_path / "config"
+    artifacts.config_dir.mkdir()
+    k3d = Mock(spec=K3dWrapper)
+    k3d.cluster_name = "test"
+    k3d.os_artifacts = artifacts
+    k3d.CONTAINERD_IMAGE_PATH = "/images"
+    k3d.cluster_exists.return_value = True
+    k3d.create.return_value = True
+    preserved_config = {
+        "servers": 2,
+        "agents": 1,
+        "port": 32108,
+        "host": "127.0.0.2",
+        "registry_port": 5500,
+    }
+    k3d.get_cluster_config.return_value = preserved_config
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.os_artifacts = artifacts
+    kubectl.cluster_name = "test"
+    kubectl.context_name = "k3d-test"
+    terraform = Mock(spec=TerraformWrapper)
+    terraform.workspace.return_value = nullcontext()
+    terraform.getuid.return_value = 1000
+    terraform.getgid.return_value = 1000
+    dapr = Mock()
+    dapr.needs_upgrade.return_value = False
+    restore = Mock(side_effect=(False, True))
+    needs_migration = Mock(side_effect=(True, False))
+    destroy = Mock(return_value=True)
+    monkeypatch.setattr(local, "check_disk_space", lambda path: True)
+    monkeypatch.setattr(local, "needs_service_migration", needs_migration)
+    monkeypatch.setattr(local, "verify_to_proceed", lambda message: True)
+    monkeypatch.setattr(local, "destroy", destroy)
+    monkeypatch.setattr(local, "KubectlWrapper", Mock(return_value=kubectl))
+    monkeypatch.setattr(local, "DaprWrapper", Mock(return_value=dapr))
+    monkeypatch.setattr(local, "TerraformWrapper", Mock(return_value=terraform))
+    monkeypatch.setattr(local, "DockerWrapper", Mock(return_value=Mock()))
+    monkeypatch.setattr(local, "restore_redis_data", restore)
+    monkeypatch.setattr(local, "status", Mock())
+    data_path = tmp_path / "data"
+
+    with pytest.raises(RuntimeError, match="Unable to restore Redis workflow state"):
+        local.setup(
+            k3d,
+            storage_path=str(tmp_path),
+            data_path=str(data_path),
+            worker_replicas=1,
+            is_update=True,
+            redis_image=CUSTOM_REDIS_IMAGE,
+        )
+    state_path = data_path / local.REDIS_MIGRATION_STATE
+    assert json.loads(state_path.read_text()) == {
+        "cluster_name": "test",
+        **preserved_config,
+    }
+
+    assert local.setup(
+        k3d,
+        storage_path=str(tmp_path),
+        data_path=str(data_path),
+        worker_replicas=1,
+        is_update=True,
+        redis_image=CUSTOM_REDIS_IMAGE,
+    )
+    assert not state_path.exists()
+    destroy.assert_called_once()
+    k3d.create.assert_called_once_with(
+        preserved_config["servers"],
+        preserved_config["agents"],
+        str(tmp_path),
+        preserved_config["registry_port"],
+        preserved_config["port"],
+        preserved_config["host"],
+    )
+    assert restore.call_args_list == [
+        call(
+            kubectl,
+            str(data_path),
+            skip_confirmation=True,
+            redis_image=CUSTOM_REDIS_IMAGE,
+        ),
+        call(
+            kubectl,
+            str(data_path),
+            skip_confirmation=True,
+            redis_image=CUSTOM_REDIS_IMAGE,
+        ),
+    ]
 
 
 def test_redis_volume_pod_renders_default_and_selected_images(

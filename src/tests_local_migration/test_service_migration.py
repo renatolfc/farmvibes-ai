@@ -2,20 +2,30 @@
 # Licensed under the MIT License.
 
 import base64
+import json
 import os
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 
 from vibe_core.cli.constants import RABBITMQ_IMAGE, REDIS_IMAGE
-from vibe_core.cli.local import DEFAULT_HOST, DEFAULT_PORT, REGISTRY_PORT
+from vibe_core.cli.local import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    REDIS_MIGRATION_STATE,
+    REGISTRY_PORT,
+)
 from vibe_core.cli.osartifacts import InstallType, OSArtifacts
 from vibe_core.cli.wrappers import K3dWrapper
 
 CHART_PATH = Path(__file__).parent / "legacy_local_services"
 MANAGED_BY_PATH = ".metadata.labels.app\\.kubernetes\\.io/managed-by"
 IMAGE_PATH = ".spec.template.spec.containers[0].image"
+MIGRATION_AGENTS = 1
+MIGRATION_PORT = DEFAULT_PORT + 10
 
 
 def run(command: Sequence[str], capture_output: bool = False) -> subprocess.CompletedProcess[str]:
@@ -61,6 +71,74 @@ def redis_command(
     return result.stdout.strip().splitlines()[-1]
 
 
+def server_created(k3d: K3dWrapper) -> str:
+    return next(
+        (
+            node["created"]
+            for node in k3d.info().get("nodes", [])
+            if node.get("role") == "server"
+        ),
+        "",
+    )
+
+
+def wait_until(
+    predicate: Callable[[], bool],
+    description: str,
+    process: Optional[subprocess.Popen[str]] = None,
+    timeout_s: int = 600,
+):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        if process is not None and process.poll() is not None:
+            raise AssertionError(
+                f"Update exited with {process.returncode} before {description}"
+            )
+        time.sleep(1)
+    raise AssertionError(f"Timed out waiting for {description}")
+
+
+def redis_is_failing(kubectl_context: Sequence[str]) -> bool:
+    result = subprocess.run(
+        list(kubectl_context) + ["get", "pod", "redis-master-0", "-o", "json"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        return False
+    statuses = json.loads(result.stdout).get("status", {}).get("containerStatuses", [])
+    return bool(
+        statuses
+        and statuses[0].get("restartCount", 0) > 0
+        and not statuses[0].get("ready", False)
+    )
+
+
+def redis_rollout_process(root_pid: int) -> Optional[int]:
+    processes = output(["ps", "-eo", "pid=,ppid=,args="]).splitlines()
+    parents = {}
+    commands = {}
+    for process in processes:
+        fields = process.strip().split(maxsplit=2)
+        if len(fields) == 3:
+            pid, parent, command = fields
+            parents[int(pid)] = int(parent)
+            commands[int(pid)] = command
+
+    for pid, command in commands.items():
+        if "rollout status statefulset/redis-master" not in command:
+            continue
+        ancestor = pid
+        while ancestor in parents and ancestor != root_pid:
+            ancestor = parents[ancestor]
+        if ancestor == root_pid:
+            return pid
+    return None
+
+
 def test_chart_to_native_redis_migration_preserves_data():
     cluster_name = os.environ["FARMVIBES_AI_CLUSTER_NAME"]
     storage_path = Path(os.environ["FARMVIBES_AI_STORAGE_PATH"])
@@ -78,12 +156,22 @@ def test_chart_to_native_redis_migration_preserves_data():
     storage_path.mkdir(parents=True, exist_ok=True)
     assert k3d.create(
         servers=1,
-        agents=0,
+        agents=MIGRATION_AGENTS,
         storage_path=str(storage_path),
         registry_port=REGISTRY_PORT,
-        farmvibes_port=DEFAULT_PORT,
+        farmvibes_port=MIGRATION_PORT,
         host=DEFAULT_HOST,
     )
+    legacy_config = k3d.get_cluster_config()
+    assert legacy_config == {
+        "servers": 1,
+        "agents": MIGRATION_AGENTS,
+        "port": MIGRATION_PORT,
+        "host": DEFAULT_HOST,
+        "registry_port": REGISTRY_PORT,
+    }
+    old_server_created = server_created(k3d)
+    assert old_server_created
 
     context = f"k3d-{cluster_name}"
     kubectl = artifacts.kubectl
@@ -128,24 +216,81 @@ def test_chart_to_native_redis_migration_preserves_data():
 
     farmvibes_ai = shutil.which("farmvibes-ai")
     assert farmvibes_ai is not None
-    run(
-        [
-            farmvibes_ai,
-            "local",
-            "update",
-            "--auto-confirm",
-            "--cluster-name",
-            cluster_name,
-            "--storage-path",
-            str(storage_path),
-            "--worker-replicas",
-            "1",
-        ]
-    )
+    update_command = [
+        farmvibes_ai,
+        "local",
+        "update",
+        "--auto-confirm",
+        "--cluster-name",
+        cluster_name,
+        "--storage-path",
+        str(storage_path),
+        "--worker-replicas",
+        "1",
+    ]
+    backup_path = storage_path / "data" / "redis-dump.rdb"
+    first_update = subprocess.Popen(update_command, text=True)
+    try:
+        def cluster_was_recreated() -> bool:
+            created = server_created(k3d)
+            return bool(created and created != old_server_created)
+
+        wait_until(
+            cluster_was_recreated,
+            "the recreated native cluster",
+            first_update,
+        )
+        wait_until(
+            lambda: backup_path.exists() and backup_path.stat().st_size > 0,
+            "the Redis backup",
+            first_update,
+        )
+        original_backup = backup_path.read_bytes()
+        backup_path.write_bytes(b"not a redis dump\n")
+
+        wait_until(
+            lambda: redis_is_failing(kubectl_context),
+            "Redis to reject the corrupt dump",
+            first_update,
+        )
+        assert first_update.poll() is None, (
+            "Migration reported success while Redis was still rejecting dump.rdb"
+        )
+        rollout_pid: Optional[int] = None
+
+        def find_rollout() -> bool:
+            nonlocal rollout_pid
+            rollout_pid = redis_rollout_process(first_update.pid)
+            return rollout_pid is not None
+
+        wait_until(
+            find_rollout,
+            "the Redis readiness rollout check",
+            first_update,
+            timeout_s=60,
+        )
+        assert rollout_pid is not None
+        # A rejected RDB would make the real rollout wait for its full timeout.
+        # Stop only that scoped check after proving the update remains blocked.
+        os.kill(rollout_pid, signal.SIGTERM)
+        assert first_update.wait(timeout=120) != 0
+    finally:
+        if first_update.poll() is None:
+            first_update.terminate()
+            first_update.wait(timeout=30)
+
+    migration_state = storage_path / "data" / REDIS_MIGRATION_STATE
+    assert migration_state.exists()
+    assert k3d.get_cluster_config() == legacy_config
+
+    backup_path.write_bytes(original_backup)
+    run(update_command)
+    assert not migration_state.exists()
+    assert backup_path.read_bytes() == original_backup
+    assert k3d.get_cluster_config() == legacy_config
 
     run(kubectl_context + ["rollout", "status", "statefulset/redis-master", "--timeout=5m"])
     run(kubectl_context + ["rollout", "status", "statefulset/rabbitmq", "--timeout=5m"])
-    backup_path = storage_path / "data" / "redis-dump.rdb"
     assert backup_path.stat().st_size > 0
 
     new_pvc_uid = resource_field(
@@ -177,6 +322,6 @@ def test_chart_to_native_redis_migration_preserves_data():
     restored_value = redis_command(kubectl_context, new_password, "GET", redis_key)
     assert restored_value == redis_value
     print(
-        "Redis migration value survived: "
+        "Redis migration retry survived a rejected dump: "
         f"key={redis_key} value={restored_value} old_pvc={old_pvc_uid} new_pvc={new_pvc_uid}"
     )
