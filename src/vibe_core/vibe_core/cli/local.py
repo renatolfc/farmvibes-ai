@@ -362,7 +362,7 @@ def prepare_registry_auth(
     preflight: bool = True,
     use_existing: bool = True,
     retain_selected_only: bool = False,
-    restore_existing: bool = False,
+    preserve_existing_secret: bool = False,
 ) -> Tuple[Optional[str], List[str], Optional[AzureCliWrapper]]:
     if username and not password:
         raise RuntimeError("A registry username requires a registry password")
@@ -422,7 +422,7 @@ def prepare_registry_auth(
                     f"{error}",
                     level="warning",
                 )
-    if combined and not restore_existing:
+    if combined and not preserve_existing_secret:
         kubectl.apply_docker_config_secret("acrtoken", combined)
     return docker_config, sorted(acr), az
 
@@ -1332,7 +1332,7 @@ def setup(
                 username,
                 password,
                 retain_selected_only=True,
-                restore_existing=True,
+                preserve_existing_secret=True,
             )
             migration_state = new_redis_migration_state(
                 k3d.cluster_name,
@@ -1360,7 +1360,7 @@ def setup(
                 migration_state.get("acr_registries"),
                 use_existing=False,
                 retain_selected_only=True,
-                restore_existing=True,
+                preserve_existing_secret=True,
             )
             migration_state["docker_config"] = docker_config
             migration_state["acr_registries"] = acr_registries
