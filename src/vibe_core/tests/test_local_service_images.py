@@ -457,6 +457,32 @@ def test_restore_marker_probe_propagates_transient_failures(
         )
 
 
+def test_restore_marker_uses_container_rediscli_auth(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.exec.return_value = "migration-value"
+    state = {
+        "marker_key": "migration-key",
+        "marker_value": "migration-value",
+    }
+    monkeypatch.setattr(
+        local,
+        "find_redis_master",
+        lambda kubectl: ("redis-master-0", "redis-master", "StatefulSet"),
+    )
+
+    assert local.redis_migration_marker_matches(kubectl, state)
+    local.clear_redis_migration_marker(kubectl, state)
+    commands = [invocation.args[1] for invocation in kubectl.exec.call_args_list]
+    assert commands == [
+        ["sh", "-c", 'redis-cli --raw GET "$1"', "sh", "migration-key"],
+        ["sh", "-c", 'redis-cli DEL "$1" >/dev/null', "sh", "migration-key"],
+    ]
+    assert all("REDIS_PASSWORD" not in " ".join(command) for command in commands)
+
+
 def test_k3d_does_not_share_containerd_store_across_nodes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

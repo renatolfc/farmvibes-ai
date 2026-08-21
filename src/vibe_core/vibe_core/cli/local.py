@@ -206,7 +206,7 @@ def redis_migration_marker_matches(
             [
                 "sh",
                 "-c",
-                'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --raw GET "$1"',
+                'redis-cli --raw GET "$1"',
                 "sh",
                 state["marker_key"],
             ],
@@ -227,7 +227,7 @@ def clear_redis_migration_marker(
             [
                 "sh",
                 "-c",
-                'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli DEL "$1" >/dev/null',
+                'redis-cli DEL "$1" >/dev/null',
                 "sh",
                 state["marker_key"],
             ],
