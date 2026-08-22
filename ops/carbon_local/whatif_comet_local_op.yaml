@@ -5,8 +5,9 @@ inputs:
 output:
   carbon_output: CarbonOffsetInfo
 parameters:
-  comet_url: "https://comet-farm.com/ApiMain/AddToQueue"
+  comet_url: "https://comet-farm.com/apimain/uploadapiqueue"
   comet_support_email:
+  comet_api_key: "@SECRET(eywa-secrets, comet-api-key)"
   ngrok_token:
 entrypoint:
   file: whatif_comet_local.py
