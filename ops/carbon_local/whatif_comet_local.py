@@ -61,9 +61,10 @@ class SeasonalFieldConverter:
         ET.SubElement(cropland, "CRPEndYear").text = historical_data["crp_end"] or "0"
         ET.SubElement(cropland, "CRPType").text = historical_data["crp_type"]
         ET.SubElement(cropland, "Year1980-2000").text = historical_data["year_1980_2000"]
-        ET.SubElement(cropland, "Year1980-2000_Tillage").text = historical_data[
-            "year_1980_2000_tillage"
-        ]
+        historical_tillage = historical_data["year_1980_2000_tillage"]
+        ET.SubElement(cropland, "Year1980-2000_Tillage").text = TILLAGE_NAMES.get(
+            historical_tillage, historical_tillage
+        )
 
     def _add_harvest_information(self, harvest_data: HarvestInformation, harvest_list: ET.Element):
         if isinstance(harvest_data, dict):
@@ -108,6 +109,7 @@ class SeasonalFieldConverter:
         ET.SubElement(omadevent, "OMADApplicationDate").text = self.format_datetime(
             omad_data.end_date
         )
+        ET.SubElement(omadevent, "OMADType").text = omad_data.organic_amendment_type
         ET.SubElement(omadevent, "OMADApplicationMethod").text = "Surface"
         ET.SubElement(omadevent, "OMADAmount").text = str(omad_data.organic_amendment_amount)
         ET.SubElement(omadevent, "OMADPercentN").text = str(

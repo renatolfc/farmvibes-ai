@@ -73,7 +73,16 @@ def baseline_information():
                     "implement": "Reduced Tillage",
                 }
             ],
-            "organic_amendments": [],
+            "organic_amendments": [
+                {
+                    "start_date": "2000-03-01T00:00:00Z",
+                    "end_date": "2000-03-01T00:00:00Z",
+                    "organic_amendment_type": "Soybean Meal",
+                    "organic_amendment_amount": 1.0,
+                    "organic_amendment_percent_nitrogen": 7.0,
+                    "organic_amendment_carbon_nitrogen_ratio": 4.0,
+                }
+            ],
         }
     ]
 
@@ -330,6 +339,7 @@ def test_comet_v25_request(
     assert cropland.findtext("Pre-1980") == "Cropland Lowland Non-Irrigated (Pre 1980s)"
     assert cropland.findtext("CRPStartYear") == "0"
     assert cropland.findtext("CRPEndYear") == "0"
+    assert cropland.findtext("Year1980-2000_Tillage") == "Full Intensive Till (III)"
     scenarios = cropland.findall("CropScenario")
     assert [scenario.attrib["Name"] for scenario in scenarios[:1]] == ["Current"]
     assert len(scenarios) == 2
@@ -344,6 +354,10 @@ def test_comet_v25_request(
         == "No Till (III)"
     )
     assert scenarios[0].find("CropYear/Crop/BioCharApplicationList") is not None
+    omad = scenarios[0].find("CropYear/Crop/OMADApplicationList/OMADApplicationEvent")
+    assert omad is not None
+    assert omad.findtext("OMADType") == "Soybean Meal"
+    assert omad.findtext("OMADApplicationMethod") == "Surface"
 
 
 def test_comet_v25_bumps_operation_version():
