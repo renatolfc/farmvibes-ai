@@ -170,6 +170,18 @@ def test_history_retention_defaults_are_local_only(monkeypatch: pytest.MonkeyPat
     assert aks_data_ops_config.max_compact_history_runs is None
 
 
+def test_history_limits_can_be_configured_without_cli_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from vibe_agent.launch_data_ops import history_limit
+
+    monkeypatch.setenv("MAX_FULL_HISTORY_RUNS", "12")
+    monkeypatch.setenv("MAX_COMPACT_HISTORY_RUNS", "34")
+
+    assert history_limit("MAX_FULL_HISTORY_RUNS", 100) == 12
+    assert history_limit("MAX_COMPACT_HISTORY_RUNS", 900) == 34
+
+
 @pytest.mark.anyio
 async def test_zero_limits_hard_delete_terminal_history():
     run_id = str(uuid4())

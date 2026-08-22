@@ -21,8 +21,6 @@ locals {
       "data_ops.impl.logdir=${var.log_dir}",
       "data_ops.impl.storage.local_path=/mnt/data/stac",
       "data_ops.impl.storage.asset_manager.local_storage_path=/mnt/data/assets",
-      "data_ops.impl.max_full_history_runs=${var.max_full_history_runs}",
-      "data_ops.impl.max_compact_history_runs=${var.max_compact_history_runs}",
     ],
     var.max_log_file_bytes != "" ? [
       "data_ops.impl.max_log_file_bytes=${var.max_log_file_bytes}"
@@ -150,6 +148,20 @@ resource "kubernetes_deployment" "dataops" {
           env {
             name  = "STAC_COSMOS_CONNECTION_KEY_SECRET"
             value = "stac-cosmos-write-key"
+          }
+          dynamic "env" {
+            for_each = var.local_deployment ? [1] : []
+            content {
+              name  = "MAX_FULL_HISTORY_RUNS"
+              value = tostring(var.max_full_history_runs)
+            }
+          }
+          dynamic "env" {
+            for_each = var.local_deployment ? [1] : []
+            content {
+              name  = "MAX_COMPACT_HISTORY_RUNS"
+              value = tostring(var.max_compact_history_runs)
+            }
           }
           dynamic "volume_mount" {
             for_each = var.local_deployment ? [1] : []

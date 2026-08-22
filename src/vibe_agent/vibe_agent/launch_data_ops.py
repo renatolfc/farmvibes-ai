@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import asyncio
+import os
 from typing import Any
 
 import hydra
@@ -19,13 +20,22 @@ from vibe_agent.data_ops import (
 # Create instiatiatable configs for CacheMetadataStoreProtocol
 redis_cache_metadata_store_config = RedisCacheMetadataStoreConfig()
 
+
+def history_limit(name: str, default: int) -> int:
+    return int(os.environ.get(name, default))
+
+
 # create two DataOpsConfigs: one to build DataOpsManager with local storage and another for
 # to build DataOpsManager with AKS/Cosmos storage
 local_data_ops_config = DataOpsConfig(
     metadata_store=redis_cache_metadata_store_config,
     storage=local_storage,
-    max_full_history_runs=DEFAULT_MAX_FULL_HISTORY_RUNS,
-    max_compact_history_runs=DEFAULT_MAX_COMPACT_HISTORY_RUNS,
+    max_full_history_runs=history_limit(
+        "MAX_FULL_HISTORY_RUNS", DEFAULT_MAX_FULL_HISTORY_RUNS
+    ),
+    max_compact_history_runs=history_limit(
+        "MAX_COMPACT_HISTORY_RUNS", DEFAULT_MAX_COMPACT_HISTORY_RUNS
+    ),
     scan_redis_workflow_state=True,
 )
 aks_data_ops_config = DataOpsConfig(
