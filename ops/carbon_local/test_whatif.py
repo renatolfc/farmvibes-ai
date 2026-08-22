@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from unittest.mock import Mock, patch
 
 import pytest
+import yaml
 from pyngrok.exception import PyngrokError
 from whatif_comet_local import SeasonalFieldConverter
 
@@ -343,6 +344,14 @@ def test_comet_v25_request(
         == "No Till (III)"
     )
     assert scenarios[0].find("CropYear/Crop/BioCharApplicationList") is not None
+
+
+def test_comet_v25_bumps_operation_version():
+    with open(
+        os.path.join(os.path.dirname(__file__), "whatif_comet_local_op.yaml")
+    ) as config:
+        assert yaml.safe_load(config)["version"] == 3
+
 
 @patch("vibe_lib.comet_farm.comet_server.requests.request")
 def test_submit_job_uses_api_key_without_logging_it(
