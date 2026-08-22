@@ -129,8 +129,9 @@ def test_genuine_never_existing_run_is_not_returned_as_deleted(
 @patch.object(
     TerravibesProvider,
     "list_runs_from_store_with_etag",
-    side_effect=lambda: ([], None),
+    side_effect=[([], None), ([], "1")],
 )
+@patch.object(StateStore, "store_if_absent")
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk")
@@ -144,6 +145,7 @@ def test_submit_run(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    store_if_absent: MagicMock,
     list_runs: MagicMock,
     _: MagicMock,
     rest_client: FarmvibesAiClient,
@@ -180,8 +182,9 @@ def test_submit_run(
 @patch.object(
     TerravibesProvider,
     "list_runs_from_store_with_etag",
-    side_effect=lambda: ([], None),
+    side_effect=[([], None), ([], "1")],
 )
+@patch.object(StateStore, "store_if_absent")
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk")
@@ -189,6 +192,7 @@ def test_submit_base_vibe_run(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    store_if_absent: MagicMock,
     list_runs: MagicMock,
     _: MagicMock,
     rest_client: FarmvibesAiClient,
@@ -223,8 +227,9 @@ def test_submit_base_vibe_run(
 @patch.object(
     TerravibesProvider,
     "list_runs_from_store_with_etag",
-    side_effect=lambda: ([], None),
+    side_effect=[([], None), ([], "1")],
 )
+@patch.object(StateStore, "store_if_absent")
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk")
@@ -241,6 +246,7 @@ async def test_monitor_run_with_none_datetime_fields(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    store_if_absent: MagicMock,
     list_runs: MagicMock,
     _: MagicMock,
     rest_client: FarmvibesAiClient,
