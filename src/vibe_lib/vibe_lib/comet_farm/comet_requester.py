@@ -40,9 +40,10 @@ class CometRequester:
             cr = CometResponse(**comet_json)
             cLand = cr.day.cropland
             for scenario in cLand.modelRun.scenario:
-                if isinstance(scenario, CometOutput):
+                if isinstance(scenario, CometOutput) and "scenario" in scenario.name.lower():
                     co = CometOutput(**scenario.dict())
                     carbon_offset = co.carbon.soilCarbon + " Mg Co2e/year"
+                    break
 
             if carbon_offset is None:
                 raise RuntimeError("Missing carbon offset from COMET-Farm API")
