@@ -5,7 +5,7 @@ import asyncio
 import asyncio.queues
 import logging
 from argparse import ArgumentParser
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import asdict
 from datetime import datetime
 from functools import partial
@@ -477,10 +477,11 @@ class WorkflowRunManager:
 
     @staticmethod
     async def add_output_to_run(run_id: str, output: OpIOType, statestore: StateStore) -> None:
-        run_data = await statestore.retrieve(run_id)
+        run_data = deepcopy(await statestore.retrieve(run_id))
         run_config = RunConfig(**run_data)
         run_config.set_output(output)
-        await statestore.store(run_id, run_config)
+        run_data["output"] = run_config.output
+        await statestore.store(run_id, run_data)
 
     async def cancel(self):
         self.is_cancelled = True
@@ -495,15 +496,15 @@ async def update_workflow(
     reason: Optional[str] = None,
     dont_update: Callable[[RunStatus], bool] = RunStatus.finished,
 ) -> None:
-    run_data = await statestore.retrieve(run_id)
+    run_data = deepcopy(await statestore.retrieve(run_id))
     run_config = RunConfig(**run_data)
     if dont_update(run_config.details.status):
         return
-    run_config.details.status = new_status
-    run_config.details.reason = reason if reason else ""
+    run_data["details"]["status"] = new_status
+    run_data["details"]["reason"] = reason if reason else ""
     if new_status in {RunStatus.failed}:
-        run_config.details.start_time = run_config.details.end_time = datetime.now()
-    await statestore.store(run_id, run_config)
+        run_data["details"]["start_time"] = run_data["details"]["end_time"] = datetime.now()
+    await statestore.store(run_id, run_data)
 
 
 class Orchestrator:
@@ -688,15 +689,17 @@ class Orchestrator:
         await asyncio.gather(server_task, resume_call)
 
     async def get_unfinished_workflows(self) -> List[RunConfig]:
-        keys = []
         try:
             keys = await self.statestore.retrieve(RUNS_KEY)
         except KeyError:
-            await self.statestore.store(RUNS_KEY, [])
+            return []
 
-        all_runs = cast(
-            List[RunConfig], [RunConfig(**r) for r in await self.statestore.retrieve_bulk(keys)]
-        )
+        run_state = await self.statestore.retrieve_bulk_existing(keys)
+        all_runs = [
+            RunConfig(**run_state[key])
+            for key in keys
+            if isinstance(run_state.get(key), dict)
+        ]
         return [r for r in all_runs if not RunStatus.finished(r.details.status)]
 
     def run_config_to_workflow_message(self, run: RunConfig) -> WorkflowExecutionMessage:

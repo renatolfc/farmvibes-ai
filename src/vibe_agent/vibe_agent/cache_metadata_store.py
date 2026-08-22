@@ -30,6 +30,8 @@ class CacheMetadataStoreProtocol(Protocol):
 
     async def get_assets_refs(self, asset_ids: Set[str]) -> Dict[str, Set[OpRunId]]: ...
 
+    async def find_keys(self, pattern: str) -> Set[str]: ...
+
     async def remove_workflow_op_refs(
         self, workflow_run_id: str, op_run_ref: OpRunId
     ) -> Set[str]: ...
@@ -130,6 +132,14 @@ class RedisCacheMetadataStore(CacheMetadataStoreProtocol):
             run_ops_key = self._run_ops_key_format.format(run_id=run_id)
             run_ops = await redis_client.smembers(run_ops_key)
             return {self._str_to_op_run_id(o) for o in run_ops}
+        finally:
+            await redis_client.close()
+
+    async def find_keys(self, pattern: str) -> Set[str]:
+        """Find raw Redis keys for legacy workflow state cleanup."""
+        redis_client = await self._get_redis_client()
+        try:
+            return {key async for key in redis_client.scan_iter(match=pattern)}
         finally:
             await redis_client.close()
 

@@ -758,6 +758,7 @@ class VibeWorkflowRun(WorkflowRun, MonitoredWorkflowRun):
         self._reason = ""
         self._output = None
         self._task_details = None
+        self._deletion_requested = False
 
     def _convert_output(self, output: Dict[str, Any]) -> BaseVibeDict:
         """Convert the output of the workflow run to a :class:`BaseVibeDict`.
@@ -840,9 +841,11 @@ class VibeWorkflowRun(WorkflowRun, MonitoredWorkflowRun):
     def status(self) -> RunStatus:
         """Get the status of the workflow run."""
         if self._status is not RunStatus.deleted:
-            self._status = cast(
-                RunStatus, RunStatus(self.client.list_runs(self.id)[0]["details.status"])
-            )
+            runs = self.client.list_runs(self.id)
+            if not runs and self._deletion_requested:
+                self._status = RunStatus.deleted
+            else:
+                self._status = cast(RunStatus, RunStatus(runs[0]["details.status"]))
         return self._status
 
     @property
@@ -918,6 +921,7 @@ class VibeWorkflowRun(WorkflowRun, MonitoredWorkflowRun):
 
         """
         self.client.delete_run(self.id)
+        self._deletion_requested = True
         self.status
         return self
 

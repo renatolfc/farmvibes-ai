@@ -196,6 +196,8 @@ class RunConfig(RunConfigInput):
     """The spatio temporal json of the run config."""
     output: str = ""
     """The output of the run."""
+    history_compacted: bool = False
+    """Whether task details and output were removed by history retention."""
 
     def set_output(self, value: OpIOType):  # pydantic won't let us use a property setter
         """Set the output of the run config.

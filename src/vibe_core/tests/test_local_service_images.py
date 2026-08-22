@@ -409,6 +409,8 @@ def test_shared_v2_setup_preserves_checkpointed_options(
         "registry_port": None,
         "redis_image": None,
         "rabbitmq_image": None,
+        "max_full_history_runs": 100,
+        "max_compact_history_runs": 900,
     }
     artifacts = OSArtifacts()
     migrated = local.load_redis_migration_state(

@@ -68,6 +68,16 @@ variable "log_backup_count" {
   description = "Number of log files to keep for each service instance"
 }
 
+variable "max_full_history_runs" {
+  default     = 100
+  description = "Newest workflow runs to retain with full task details and output"
+}
+
+variable "max_compact_history_runs" {
+  default     = 900
+  description = "Compacted workflow run summaries to retain after the full-history tier"
+}
+
 variable "environment" {
   description = "Unused"
   default     = ""

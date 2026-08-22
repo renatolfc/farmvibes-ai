@@ -1,22 +1,27 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import asyncio
+import json
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4 as uuid
 
 import pytest
 import requests
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from vibe_common.constants import CONTROL_STATUS_PUBSUB, WORKFLOW_REQUEST_PUBSUB_TOPIC
+from vibe_common.constants import CONTROL_STATUS_PUBSUB, RUNS_KEY, WORKFLOW_REQUEST_PUBSUB_TOPIC
 from vibe_common.messaging import WorkflowCancellationMessage
-from vibe_common.statestore import StateStore
+from vibe_common.statestore import DEFAULT_BULK_PARALLELISM, StateStore, StateStoreConflictError
 from vibe_core.data.core_types import InnerIOType
 from vibe_core.data.utils import StacConverter, deserialize_stac
 from vibe_core.datamodel import RunConfig, RunConfigInput, RunDetails, RunStatus
 from vibe_server.href_handler import BlobHrefHandler, LocalHrefHandler
+from vibe_server.orchestrator import Orchestrator
 from vibe_server.server import TerravibesAPI, TerravibesProvider
 from vibe_server.workflow.input_handler import build_args_for_workflow
 from vibe_server.workflow.workflow import load_workflow_by_name
@@ -80,25 +85,32 @@ def test_generate_api_documentation_page(request_client: requests.Session):
 
 @pytest.mark.parametrize("params", [None, {"param1": "new_param"}])
 @patch("vibe_server.server.send", return_value="OK")
+@patch.object(StateStore, "store_if_absent")
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 @patch.object(StateStore, "retrieve_bulk", side_effect=lambda _: [])
+@patch.object(StateStore, "retrieve_with_etag")
 def test_workflow_submission(
+    retrieve_with_etag: MagicMock,
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    store_if_absent: MagicMock,
     send: MagicMock,
     workflow_run_config: Dict[str, Any],
     params: Dict[str, Any],
     request_client: requests.Session,
 ):
+    retrieve_with_etag.side_effect = [([], None), ([], "1")]
     workflow_run_config["parameters"] = params
     response = request_client.post("/v0/runs", json=workflow_run_config)
     send.assert_called()
     assert send.call_args[0][0].content.parameters == params
 
     assert response.status_code == 201
+    store_if_absent.assert_awaited_once_with(RUNS_KEY, [])
     assert len(transaction.call_args.args[0]) == 2
+    assert transaction.call_args.args[0][0]["etag"] == "1"
     id = response.json()["id"]
     assert transaction.call_args.args[0][0]["value"][0] == id
     submitted_config = asdict(transaction.call_args.args[0][1]["value"])
@@ -120,11 +132,246 @@ def test_workflow_submission(
     assert len(response.json()) == 1
 
 
+@patch.object(TerravibesProvider, "submit_work")
+@patch.object(StateStore, "transaction")
+@patch.object(StateStore, "retrieve_with_etag")
+def test_workflow_submission_retries_run_index_conflict(
+    retrieve_with_etag: MagicMock,
+    transaction: MagicMock,
+    __: MagicMock,
+    workflow_run_config: Dict[str, Any],
+    request_client: requests.Session,
+):
+    concurrent_ids = ["concurrent"]
+    retrieve_with_etag.side_effect = [(["older"], "1"), (concurrent_ids, "2")]
+
+    async def conflict_after_commit(operations: List[Dict[str, Any]]):
+        if transaction.await_count == 1:
+            concurrent_ids.append(operations[0]["value"][-1])
+            raise StateStoreConflictError("simulated ambiguous conflict")
+
+    transaction.side_effect = conflict_after_commit
+    response = request_client.post("/v0/runs", json=workflow_run_config)
+
+    assert response.status_code == 201
+    run_id = response.json()["id"]
+    assert transaction.await_count == 2
+    assert transaction.call_args_list[0].args[0][0]["value"] == ["older", run_id]
+    assert transaction.call_args_list[1].args[0][0]["value"] == ["concurrent", run_id]
+    assert transaction.call_args_list[1].args[0][0]["etag"] == "2"
+
+
+@pytest.mark.parametrize("backend", ["redis", "cosmos"])
+@pytest.mark.anyio
+async def test_independent_providers_create_missing_run_index_without_lost_updates(
+    workflow_run_config: Dict[str, Any],
+    backend: str,
+):
+    state: Dict[str, Any] = {}
+    version = 0
+    missing_reads = 0
+    all_read_missing = asyncio.Event()
+    state_lock = asyncio.Lock()
+
+    async def retrieve_with_etag(key: str, **_: Any):
+        nonlocal missing_reads
+        async with state_lock:
+            if key in state:
+                return deepcopy(state[key]), str(version)
+            missing_reads += 1
+            if missing_reads == 3:
+                all_read_missing.set()
+        await all_read_missing.wait()
+        raise KeyError(key)
+
+    async def retrieve(key: str):
+        value, _ = await retrieve_with_etag(key)
+        return value
+
+    async def store_if_absent(key: str, value: Any):
+        nonlocal version
+        async with state_lock:
+            if key in state:
+                raise StateStoreConflictError(f"{backend} create conflict")
+            state[key] = deepcopy(value)
+            version += 1
+
+    async def transaction(operations: List[Dict[str, Any]]):
+        nonlocal version
+        async with state_lock:
+            index_operation = operations[0]
+            etag = index_operation.get("etag")
+            if RUNS_KEY not in state:
+                raise RuntimeError(f"{backend} run index was not initialized")
+            if etag != str(version):
+                raise StateStoreConflictError(f"{backend} first-write conflict")
+            for operation in operations:
+                state[operation["key"]] = deepcopy(operation.get("value"))
+            version += 1
+
+    providers = [
+        TerravibesProvider(LocalHrefHandler(".")),
+        TerravibesProvider(LocalHrefHandler(".")),
+    ]
+    provider_stores = [StateStore(), StateStore()]
+    for provider, store in zip(providers, provider_stores):
+        store.retrieve_with_etag = AsyncMock(side_effect=retrieve_with_etag)
+        store.store_if_absent = AsyncMock(side_effect=store_if_absent)
+        store.transaction = AsyncMock(side_effect=transaction)
+        provider.state_store = store
+
+    orchestrator = Orchestrator()
+    orchestrator.statestore.retrieve = AsyncMock(side_effect=retrieve)
+    startup_store = AsyncMock()
+    orchestrator.statestore.store = startup_store
+
+    with patch.object(TerravibesProvider, "submit_work"):
+        first, second, startup_runs = await asyncio.gather(
+            providers[0].create_run(RunConfigInput(**deepcopy(workflow_run_config))),
+            providers[1].create_run(RunConfigInput(**deepcopy(workflow_run_config))),
+            orchestrator.get_unfinished_workflows(),
+        )
+
+    assert isinstance(first, JSONResponse)
+    assert isinstance(second, JSONResponse)
+    run_ids = {json.loads(response.body)["id"] for response in (first, second)}
+    assert first.status_code == second.status_code == 201
+    assert set(state[RUNS_KEY]) == run_ids
+    assert len(run_ids) == 2
+    assert startup_runs == []
+    for store in provider_stores:
+        store.store_if_absent.assert_awaited_once_with(RUNS_KEY, [])
+        first_index_write = store.transaction.call_args_list[0].args[0][0]
+        assert first_index_write["etag"]
+        assert first_index_write["options"]["concurrency"] == "first-write"
+        assert first_index_write["options"]["consistency"] == "strong"
+    startup_store.assert_not_awaited()
+
+
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 def test_no_workflow_runs(_, request_client: requests.Session):
     response = request_client.get("/v0/runs")
     assert response.status_code == 200
     assert len(response.json()) == 0
+
+
+@patch.object(StateStore, "retrieve_bulk", side_effect=KeyError("concurrent deletion"))
+@patch.object(StateStore, "retrieve")
+def test_compacted_and_missing_runs_do_not_break_bulk_listing(
+    retrieve: MagicMock,
+    _: MagicMock,
+    request_client: requests.Session,
+):
+    compacted_id = str(uuid())
+    missing_id = str(uuid())
+    compacted = asdict(
+        RunConfig(
+            name="compacted",
+            workflow="helloworld",
+            parameters={"preserved": True},
+            user_input={"input": "preserved"},
+            id=compacted_id,
+            details=RunDetails(status=RunStatus.done),
+            task_details={},
+            spatio_temporal_json=None,
+            output="",
+            history_compacted=True,
+        )
+    )
+
+    def retrieve_effect(key: str):
+        if key == compacted_id:
+            return compacted
+        raise KeyError(key)
+
+    retrieve.side_effect = retrieve_effect
+    response = request_client.get(
+        "/v0/runs",
+        params=[
+            ("ids", compacted_id),
+            ("ids", missing_id),
+            ("fields", "id"),
+            ("fields", "history_compacted"),
+            ("fields", "task_details"),
+            ("fields", "details.status"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": compacted_id,
+            "history_compacted": True,
+            "task_details": {},
+            "details.status": RunStatus.done,
+        }
+    ]
+
+    detail = request_client.get(f"/v0/runs/{compacted_id}")
+    assert detail.status_code == 200
+    assert detail.json()["history_compacted"] is True
+    assert detail.json()["task_details"] == {}
+    assert detail.json()["output"] == {}
+
+
+@pytest.mark.anyio
+async def test_bulk_fallback_bounds_concurrency_and_skips_missing_state():
+    provider = TerravibesProvider(LocalHrefHandler("/tmp"))
+    run_ids = [str(uuid()) for _ in range(DEFAULT_BULK_PARALLELISM * 2 + 3)]
+    missing_run_id = run_ids[3]
+    missing_task_run_id = run_ids[5]
+    state: Dict[str, Any] = {}
+    for run_id in run_ids:
+        if run_id == missing_run_id:
+            continue
+        run = asdict(
+            RunConfig(
+                name=run_id,
+                workflow="helloworld",
+                parameters={},
+                user_input={},
+                id=run_id,
+                details=RunDetails(status=RunStatus.done),
+                task_details={},
+                spatio_temporal_json=None,
+            )
+        )
+        run["tasks"] = ["task"]
+        state[run_id] = run
+        if run_id != missing_task_run_id:
+            state[f"{run_id}-task"] = asdict(RunDetails(status=RunStatus.done))
+
+    active = 0
+    peak = 0
+
+    async def retrieve(key: str):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0)
+            if key not in state:
+                raise KeyError(key)
+            return deepcopy(state[key])
+        finally:
+            active -= 1
+
+    provider.state_store.retrieve_bulk = AsyncMock(side_effect=KeyError("partial bulk result"))
+    provider.state_store.retrieve = AsyncMock(side_effect=retrieve)
+
+    runs = await provider.get_bulk_runs_by_id(run_ids)
+
+    assert peak == DEFAULT_BULK_PARALLELISM
+    assert [str(run.id) for run in runs] == [
+        run_id for run_id in run_ids if run_id != missing_run_id
+    ]
+    runs_by_id = {str(run.id): run for run in runs}
+    assert runs_by_id[missing_task_run_id].task_details == {}
+    assert all(
+        run.task_details["task"].status == RunStatus.done
+        for run_id, run in runs_by_id.items()
+        if run_id != missing_task_run_id
+    )
 
 
 def test_invalid_workflow_submission(
@@ -146,7 +393,11 @@ def test_missing_field_workflow_submission(
 
 @patch.object(TerravibesProvider, "submit_work", side_effect=Exception("sorry"))
 @patch.object(TerravibesProvider, "update_run_state")
-@patch.object(TerravibesProvider, "list_runs_from_store", return_value=[])
+@patch.object(
+    TerravibesProvider,
+    "list_runs_from_store_with_etag",
+    side_effect=lambda: ([], "1"),
+)
 def test_submit_local_workflows_with_broken_work_submission(
     _, __: Any, ___: Any, workflow_run_config: Dict[str, Any], request_client: requests.Session
 ):
@@ -156,20 +407,26 @@ def test_submit_local_workflows_with_broken_work_submission(
 
 @patch("vibe_server.server.send", return_value="OK")
 @patch.object(TerravibesProvider, "submit_work")
+@patch.object(StateStore, "store_if_absent")
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 @patch.object(StateStore, "retrieve_bulk")
+@patch.object(StateStore, "retrieve_with_etag")
 def test_workflow_submission_and_cancellation(
+    retrieve_with_etag: MagicMock,
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
-    _: MagicMock,
+    store_if_absent: MagicMock,
+    submit_work: MagicMock,
     send: MagicMock,
     workflow_run_config: Dict[str, Any],
     request_client: requests.Session,
 ):
+    retrieve_with_etag.side_effect = [([], None), ([], "1")]
     response = request_client.post("/v0/runs", json=workflow_run_config)
     assert response.status_code == 201
+    store_if_absent.assert_awaited_once_with(RUNS_KEY, [])
     assert len(transaction.call_args.args[0]) == 2
     id = response.json()["id"]
     assert transaction.call_args.args[0][0]["value"][0] == id
@@ -189,11 +446,17 @@ def test_workflow_submission_and_cancellation(
 @pytest.mark.parametrize("params", [None, {"param1": "new_param"}])
 @patch.object(TerravibesProvider, "submit_work")
 @patch.object(TerravibesProvider, "update_run_state")
+@patch.object(
+    TerravibesProvider,
+    "list_runs_from_store_with_etag",
+    side_effect=lambda: ([], "1"),
+)
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk", side_effect=lambda _: [])
 def test_workflow_resubmission(
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
+    _: MagicMock,
     update_run_state: MagicMock,
     submit_work: MagicMock,
     params: Optional[Dict[str, Any]],
@@ -207,7 +470,7 @@ def test_workflow_resubmission(
         nonlocal submitted_runs
         submitted_runs.append(run)
 
-    def update_run_state_effect(run_ids: List[str], new_run: RunConfig):
+    def update_run_state_effect(run_ids: List[str], new_run: RunConfig, _: str):
         nonlocal first_run
         first_run = asdict(new_run)
 
@@ -218,6 +481,9 @@ def test_workflow_resubmission(
     response = request_client.post("/v0/runs", json=workflow_run_config)
     assert response.status_code == 201
 
+    first_run["history_compacted"] = True
+    first_run["output"] = ""
+    first_run["task_details"] = {}
     retrieve.side_effect = [first_run, []]
     response = request_client.post(f"/v0/runs/{uuid()}/resubmit")
 

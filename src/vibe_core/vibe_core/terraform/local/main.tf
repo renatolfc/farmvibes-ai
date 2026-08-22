@@ -31,6 +31,8 @@ module "services" {
   farmvibes_log_level           = var.farmvibes_log_level
   max_log_file_bytes            = var.max_log_file_bytes
   log_backup_count              = var.log_backup_count
+  max_full_history_runs         = var.max_full_history_runs
+  max_compact_history_runs      = var.max_compact_history_runs
   host_assets_dir               = var.host_assets_dir
   kubernetes_config_path        = var.kubernetes_config_path
   kubernetes_config_context     = var.kubernetes_config_context

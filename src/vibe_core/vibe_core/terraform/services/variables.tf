@@ -55,6 +55,14 @@ variable "log_backup_count" {
   default = ""
 }
 
+variable "max_full_history_runs" {
+  default = 100
+}
+
+variable "max_compact_history_runs" {
+  default = 900
+}
+
 variable "host_assets_dir" {
   default = ""
 }
@@ -94,5 +102,5 @@ variable "farmvibes_log_level" {
 
 variable "environment" {
   description = "Unused"
-  default = ""
+  default     = ""
 }

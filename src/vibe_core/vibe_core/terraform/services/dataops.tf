@@ -149,6 +149,20 @@ resource "kubernetes_deployment" "dataops" {
             name  = "STAC_COSMOS_CONNECTION_KEY_SECRET"
             value = "stac-cosmos-write-key"
           }
+          dynamic "env" {
+            for_each = var.local_deployment ? [1] : []
+            content {
+              name  = "MAX_FULL_HISTORY_RUNS"
+              value = tostring(var.max_full_history_runs)
+            }
+          }
+          dynamic "env" {
+            for_each = var.local_deployment ? [1] : []
+            content {
+              name  = "MAX_COMPACT_HISTORY_RUNS"
+              value = tostring(var.max_compact_history_runs)
+            }
+          }
           dynamic "volume_mount" {
             for_each = var.local_deployment ? [1] : []
             content {

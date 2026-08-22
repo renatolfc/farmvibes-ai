@@ -3,7 +3,9 @@
 
 import asyncio
 import logging
-from typing import List, Optional, Set, cast
+from copy import deepcopy
+from typing import Any, Dict, List, Optional, Set, cast
+from uuid import UUID
 
 from aiorwlock import RWLock
 from cloudevents.sdk.event import v1
@@ -19,6 +21,7 @@ from vibe_agent.cache_metadata_store import (
 from vibe_agent.storage.storage import Storage, StorageConfig
 from vibe_common.constants import (
     CONTROL_STATUS_PUBSUB,
+    RUNS_KEY,
     STATUS_PUBSUB_TOPIC,
     TRACEPARENT_HEADER_KEY,
     WORKFLOW_REQUEST_PUBSUB_TOPIC,
@@ -34,12 +37,20 @@ from vibe_common.messaging import (
     run_id_from_traceparent,
 )
 from vibe_common.schemas import OpRunId, OpRunIdDict
-from vibe_common.statestore import StateStore
+from vibe_common.statestore import StateStore, StateStoreConflictError, TransactionOperation
 from vibe_common.telemetry import add_trace, setup_telemetry, update_telemetry_context
 from vibe_core.data.core_types import OpIOType
 from vibe_core.datamodel import RunConfig, RunStatus
 from vibe_core.logconfig import LOG_BACKUP_COUNT, MAX_LOG_FILE_BYTES, configure_logging
 from vibe_core.utils import ensure_list
+
+DEFAULT_MAX_FULL_HISTORY_RUNS = 100
+DEFAULT_MAX_COMPACT_HISTORY_RUNS = 900
+HISTORY_MAINTENANCE_BATCH_SIZE = 10
+HISTORY_MAINTENANCE_SCAN_SIZE = 100
+HISTORY_MAINTENANCE_INTERVAL_S = 60
+HISTORY_INDEX_UPDATE_RETRIES = 3
+WORKFLOW_TASK_KEY_PATTERN = "????????-????-????-????-????????????-*"
 
 
 class DataOpsManager:
@@ -64,8 +75,15 @@ class DataOpsManager:
     metadata_store_lock: RWLock
     otel_service_name: str
     statestore_lock: asyncio.Lock
+    history_maintenance_lock: asyncio.Lock
+    history_maintenance_wakeup: asyncio.Event
+    history_maintenance_task: Optional[asyncio.Task[None]]
+    history_compaction_offset: int
+    history_deletion_offset: int
+    legacy_task_keys: Optional[Dict[str, List[str]]]
 
     user_deletion_reason = "Deletion requested by user"
+    retention_deletion_reason = "Deletion requested by workflow history retention"
 
     def __init__(
         self,
@@ -80,7 +98,19 @@ class DataOpsManager:
         log_backup_count: int = LOG_BACKUP_COUNT,
         loglevel: Optional[str] = None,
         otel_service_name: str = "",
+        max_full_history_runs: Optional[int] = None,
+        max_compact_history_runs: Optional[int] = None,
+        scan_redis_workflow_state: bool = False,
     ):
+        if (max_full_history_runs is None) != (max_compact_history_runs is None):
+            raise ValueError("Both workflow history limits must be configured together")
+        if (
+            max_full_history_runs is not None
+            and max_compact_history_runs is not None
+            and (max_full_history_runs < 0 or max_compact_history_runs < 0)
+        ):
+            raise ValueError("Workflow history limits must be non-negative")
+
         self.app = App()
         self.port = port
         self.pubsubname = pubsubname
@@ -94,6 +124,11 @@ class DataOpsManager:
         self.log_backup_count = log_backup_count
         self.loglevel = loglevel
         self.otel_service_name = otel_service_name
+        self.max_full_history_runs = max_full_history_runs
+        self.max_compact_history_runs = max_compact_history_runs
+        self.scan_redis_workflow_state = scan_redis_workflow_state
+        self.legacy_task_keys = None
+        self.history_maintenance_task = None
 
         self._setup_routes()
 
@@ -101,12 +136,38 @@ class DataOpsManager:
         logging.debug("Creating locks")
         self.metadata_store_lock = RWLock(fast=True)
         self.statestore_lock = asyncio.Lock()
+        self.history_maintenance_lock = asyncio.Lock()
+        self.history_maintenance_wakeup = asyncio.Event()
+        self.history_compaction_offset = 0
+        self.history_deletion_offset = 0
 
     def _setup_routes(self):
         @self.app.startup()
         def startup():
+            if (
+                self.history_maintenance_task is not None
+                and not self.history_maintenance_task.done()
+            ):
+                return
             # locks have to be be created on the app's (uvicorn's) event loop
             self._init_locks()
+            if self.max_full_history_runs is None:
+                return
+            # Dapr is not available until the app startup hook returns.
+            self.history_maintenance_task = asyncio.create_task(
+                self._maintain_history_periodically()
+            )
+
+        @self.app.shutdown()
+        async def shutdown():
+            if self.history_maintenance_task is None:
+                return
+            self.history_maintenance_task.cancel()
+            try:
+                await self.history_maintenance_task
+            except asyncio.CancelledError:
+                pass
+            self.history_maintenance_task = None
 
         @self.app.subscribe_async(self.pubsubname, self.status_topic)
         async def fetch_work(event: v1.Event) -> TopicEventResponse:
@@ -184,6 +245,14 @@ class DataOpsManager:
                 run_id = str(message.run_id)
                 await self.delete_workflow_run(run_id)
 
+            if message.header.type in {
+                MessageType.workflow_execution_request,
+                MessageType.workflow_deletion_request,
+            }:
+                task = self.history_maintenance_task
+                if task is not None and not task.done():
+                    self.history_maintenance_wakeup.set()
+
             return TopicEventResponseStatus.success
 
         async def failure_callback(
@@ -248,7 +317,7 @@ class DataOpsManager:
 
         return can_delete
 
-    async def _init_delete(self, run_id: str) -> bool:
+    async def _init_delete(self, run_id: str, deletion_reason: str = user_deletion_reason) -> bool:
         async with self.statestore_lock:  # type: ignore
             # Using an async lock to ensure two deletion requests for the same workflow run don't
             # get processed at the same time.
@@ -256,24 +325,222 @@ class DataOpsManager:
             # The assumption is once the workflow is finished, the RunConfig will not change in the
             # statestore (i.e. the status will not change) outside of the Data Ops Manager so it is
             # sufficient to use asyncio lock in the Data Ops manager.
-            run_data = await self.statestore.retrieve(str(run_id))
+            run_data = deepcopy(await self.statestore.retrieve(str(run_id)))
             run_config = RunConfig(**run_data)
 
             if not self._can_delete(run_config):
                 return False
 
-            run_config.details.status = RunStatus.deleting
-            run_config.details.reason = self.user_deletion_reason
-            await self.statestore.store(run_id, run_config)
+            run_data["details"]["status"] = RunStatus.deleting
+            run_data["details"]["reason"] = deletion_reason
+            await self.statestore.store(run_id, run_data)
             return True
 
     async def _finalize_delete(self, run_id: str) -> None:
         async with self.statestore_lock:  # type: ignore
-            run_data = await self.statestore.retrieve(str(run_id))
+            run_data = deepcopy(await self.statestore.retrieve(str(run_id)))
+            run_data["details"]["status"] = RunStatus.deleted
+            run_data["output"] = ""
+            await self.statestore.store(run_id, run_data)
+
+    async def _maintain_history_safely(self) -> bool:
+        try:
+            await self.maintain_history()
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Failed to maintain workflow run history")
+            return False
+
+    async def _maintain_history_periodically(self) -> None:
+        while True:
+            self.history_maintenance_wakeup.clear()
+            if not await self._maintain_history_safely():
+                await asyncio.sleep(HISTORY_MAINTENANCE_INTERVAL_S)
+                continue
+            try:
+                await asyncio.wait_for(
+                    self.history_maintenance_wakeup.wait(),
+                    HISTORY_MAINTENANCE_INTERVAL_S,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+    async def maintain_history(self) -> None:
+        """Compact and delete a bounded slice of old workflow history."""
+        if self.max_full_history_runs is None or self.max_compact_history_runs is None:
+            return
+
+        async with self.history_maintenance_lock:  # type: ignore
+            try:
+                run_ids: List[str] = await self.statestore.retrieve(RUNS_KEY)
+            except KeyError:
+                return
+
+            full_history_start = max(0, len(run_ids) - self.max_full_history_runs)
+            compact_history_start = max(0, full_history_start - self.max_compact_history_runs)
+            deletion_candidates = run_ids[:compact_history_start]
+            compaction_candidates = run_ids[compact_history_start:full_history_start]
+
+            deletion_scan: List[str] = []
+            if deletion_candidates:
+                start = self.history_deletion_offset % len(deletion_candidates)
+                ordered_candidates = deletion_candidates[start:] + deletion_candidates[:start]
+                deletion_scan = ordered_candidates[:HISTORY_MAINTENANCE_SCAN_SIZE]
+                self.history_deletion_offset = (start + len(deletion_scan)) % len(
+                    deletion_candidates
+                )
+
+            deleted = 0
+            for run_id in deletion_scan:
+                if deleted >= HISTORY_MAINTENANCE_BATCH_SIZE:
+                    break
+                try:
+                    if await self._delete_history_run(run_id):
+                        deleted += 1
+                except Exception:
+                    logging.exception(f"Failed to delete retained workflow run {run_id}")
+
+            compaction_scan: List[str] = []
+            if compaction_candidates:
+                offset = self.history_compaction_offset % len(compaction_candidates)
+                end = len(compaction_candidates) - offset
+                start = max(0, end - HISTORY_MAINTENANCE_SCAN_SIZE)
+                compaction_scan = compaction_candidates[start:end]
+                self.history_compaction_offset = (offset + len(compaction_scan)) % len(
+                    compaction_candidates
+                )
+
+            compacted = 0
+            for run_id in reversed(compaction_scan):
+                if compacted >= HISTORY_MAINTENANCE_BATCH_SIZE:
+                    break
+                try:
+                    if await self._compact_history_run(run_id):
+                        compacted += 1
+                except Exception:
+                    logging.exception(f"Failed to compact workflow run {run_id}")
+
+    async def _compact_history_run(self, run_id: str) -> bool:
+        async with self.statestore_lock:  # type: ignore
+            try:
+                run_data = await self.statestore.retrieve(run_id)
+            except KeyError:
+                return False
+
             run_config = RunConfig(**run_data)
-            run_config.details.status = RunStatus.deleted
-            run_config.set_output({})
-            await self.statestore.store(run_id, run_config)
+            status = run_config.details.status
+            if not (RunStatus.finished(status) or status == RunStatus.deleted):
+                return False
+            if run_config.history_compacted:
+                return False
+
+            task_keys = await self._get_task_state_keys(run_id, run_data)
+            run_config.task_details = {}
+            run_config.output = ""
+            run_config.history_compacted = True
+            operations = [TransactionOperation(key=key, operation="delete") for key in task_keys]
+            operations.append(
+                TransactionOperation(key=run_id, operation="upsert", value=run_config)
+            )
+            await self.statestore.transaction(operations)
+            if self.legacy_task_keys is not None:
+                self.legacy_task_keys.pop(run_id, None)
+            logging.info(f"Compacted workflow run history for {run_id}")
+            return True
+
+    async def _delete_history_run(self, run_id: str) -> bool:
+        try:
+            run_data = await self.statestore.retrieve(run_id)
+        except KeyError:
+            return await self._remove_history_entry(run_id, [])
+
+        run_config = RunConfig(**run_data)
+        status = run_config.details.status
+        retention_deleting = (
+            status == RunStatus.deleting
+            and run_config.details.reason == self.retention_deletion_reason
+        )
+        if not (status == RunStatus.deleted or retention_deleting or RunStatus.finished(status)):
+            return False
+
+        task_keys = await self._get_task_state_keys(run_id, run_data)
+        if status == RunStatus.deleted:
+            cleanup_complete = True
+        elif retention_deleting:
+            cleanup_complete = await self._finish_delete_workflow_run(run_id)
+        else:
+            cleanup_complete = await self.delete_workflow_run(
+                run_id, self.retention_deletion_reason
+            )
+
+        if not cleanup_complete:
+            return False
+
+        state_keys = [run_id] + task_keys
+        await self._remove_history_entry(run_id, state_keys)
+        if self.legacy_task_keys is not None:
+            self.legacy_task_keys.pop(run_id, None)
+        logging.info(f"Deleted workflow run history for {run_id}")
+        return True
+
+    async def _remove_history_entry(self, run_id: str, state_keys: List[str]) -> bool:
+        for attempt in range(HISTORY_INDEX_UPDATE_RETRIES):
+            try:
+                run_ids, etag = await self.statestore.retrieve_with_etag(RUNS_KEY)
+            except KeyError:
+                if state_keys:
+                    await self.statestore.transaction(
+                        [TransactionOperation(key=key, operation="delete") for key in state_keys]
+                    )
+                return bool(state_keys)
+
+            if etag is None:
+                raise RuntimeError("State store did not return an ETag for the workflow run index")
+
+            indexed = run_id in run_ids
+            updated_run_ids = [candidate for candidate in run_ids if candidate != run_id]
+            operations = [TransactionOperation(key=key, operation="delete") for key in state_keys]
+            operations.append(
+                TransactionOperation(
+                    key=RUNS_KEY,
+                    operation="upsert",
+                    value=updated_run_ids,
+                    etag=etag,
+                    options={"concurrency": "first-write", "consistency": "strong"},
+                )
+            )
+            try:
+                await self.statestore.transaction(operations)
+                return indexed or bool(state_keys)
+            except StateStoreConflictError:
+                if attempt + 1 == HISTORY_INDEX_UPDATE_RETRIES:
+                    raise
+        return False
+
+    async def _get_task_state_keys(self, run_id: str, run_data: Dict[str, Any]) -> List[str]:
+        task_keys = [f"{run_id}-{task}" for task in run_data.get("tasks", [])]
+        if task_keys or not self.scan_redis_workflow_state:
+            return task_keys
+
+        if self.legacy_task_keys is None:
+            legacy_task_keys: Dict[str, List[str]] = {}
+            for key in await self.metadata_store.find_keys(WORKFLOW_TASK_KEY_PATTERN):
+                candidate_run_id = key[:36]
+                try:
+                    UUID(candidate_run_id)
+                except ValueError:
+                    continue
+                legacy_task_keys.setdefault(candidate_run_id, []).append(key)
+            self.legacy_task_keys = legacy_task_keys
+
+        task_keys = sorted(self.legacy_task_keys.get(run_id, []))
+        if task_keys:
+            logging.info(
+                f"Found {len(task_keys)} legacy task state key(s) for workflow run {run_id}"
+            )
+        return task_keys
 
     async def delete_op_run(self, op_run: OpRunId) -> None:
         # TODO: the following two calls may be able to be combined into one call to a Lua script
@@ -301,10 +568,8 @@ class DataOpsManager:
         self.storage.remove(op_run)
         await self.metadata_store.remove_op_asset_refs(op_run, op_asset_ids)
 
-    async def delete_workflow_run(self, run_id: str) -> bool:
-        if not await self._init_delete(run_id):
-            return False
-
+    async def _finish_delete_workflow_run(self, run_id: str) -> bool:
+        """Finish idempotent cleanup after a run has entered deleting state."""
         op_runs = await self.metadata_store.get_run_ops(run_id)
 
         for op_run in op_runs:
@@ -324,6 +589,14 @@ class DataOpsManager:
 
         await self._finalize_delete(run_id)
         return True
+
+    async def delete_workflow_run(
+        self, run_id: str, deletion_reason: str = user_deletion_reason
+    ) -> bool:
+        if not await self._init_delete(run_id, deletion_reason):
+            return False
+
+        return await self._finish_delete_workflow_run(run_id)
 
     async def run(self):
         appname = "terravibes-data-ops"
@@ -358,5 +631,8 @@ DataOpsConfig = builds(
     max_log_file_bytes=MAX_LOG_FILE_BYTES,
     log_backup_count=LOG_BACKUP_COUNT,
     loglevel=None,
+    max_full_history_runs=None,
+    max_compact_history_runs=None,
+    scan_redis_workflow_state=False,
     otel_service_name="",
 )

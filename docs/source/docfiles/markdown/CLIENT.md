@@ -308,3 +308,50 @@ deletion is successful, all cached data the workflow run produced that is not sh
 workflow runs will be deleted and status will be set to `deleted`.
 
 For more information on how data in managed and cached in FarmVibes.AI, please refer to our [Data Management user guide](./CACHE.md).
+
+## Run history retention
+
+FarmVibes.AI bounds durable workflow history by default:
+
+- The newest 100 positions in the run index retain complete run output and per-task state.
+- Eligible terminal runs in the preceding 900 positions are retained as compact summaries.
+- Eligible terminal runs in older positions are automatically deleted after the normal data/cache
+  reference cleanup completes. Their run record, task keys, and entry in the run list are then
+  removed atomically.
+
+Active runs (`pending`, `queued`, or `running`) and runs already being deleted are never compacted
+or selected for retention deletion. They can therefore temporarily make the history larger than
+the configured limits. If retention cleanup was already started and interrupted, a later pass
+resumes that cleanup but still waits for the `deleted` state before removing history keys.
+
+A compact summary has `history_compacted=true`. It preserves the run id, name, workflow,
+parameters, user input, spatio-temporal input, status, timestamps, and failure/cancellation reason,
+so listing, describing, resubmitting, and explicitly deleting the run remain supported. Run output
+and task/subtask details are no longer available: detail responses return empty `output` and
+`task_details` objects. Cached assets remain referenced until the compact summary is eventually
+deleted.
+
+The defaults divide the newest 1,000 run-index positions into full and compact tiers while limiting
+potentially large outputs and task graphs to the 100 newest positions. Active or deleting runs still
+occupy positions but are skipped. Maintenance runs in bounded passes at startup, every 60 seconds,
+and when workflow creation or deletion events are received.
+For local Redis, a prefix scan is used only when an older run record predates the stored task-name
+list needed to remove its legacy task keys.
+
+These defaults are enabled only for local Redis deployments. Updating an existing local cluster
+starts applying them immediately, so the first data-ops startup can compact or delete the oldest
+eligible terminal history. Pass larger limits to `local update` if more existing history must be
+retained. A zero value disables that retention tier rather than maintenance; setting both limits
+to zero deletes every eligible terminal run after cleanup. Non-default limits must be supplied
+again on later `local update` commands; omitted flags reapply the defaults.
+
+For a local cluster, configure both tiers during setup or update:
+
+```console
+farmvibes-ai local update \
+  --max-full-history-runs 100 \
+  --max-compact-history-runs 900
+```
+
+The data-ops service exposes the same settings as
+`data_ops.impl.max_full_history_runs` and `data_ops.impl.max_compact_history_runs`.

@@ -1231,8 +1231,17 @@ def setup(
     registry_port: Optional[int] = None,
     redis_image: Optional[str] = None,
     rabbitmq_image: Optional[str] = None,
+    max_full_history_runs: int = 100,
+    max_compact_history_runs: int = 900,
 ) -> bool:
     log("Updating local cluster" if is_update else "Setting up local cluster")
+    if is_update:
+        log(
+            "Workflow history retention will keep "
+            f"{max_full_history_runs} full runs and {max_compact_history_runs} summaries; "
+            "older eligible terminal runs may be compacted or deleted.",
+            level="warning",
+        )
     os.makedirs(data_path, exist_ok=True)
 
     kubectl = KubectlWrapper(k3d.os_artifacts, k3d.cluster_name)
@@ -1648,6 +1657,8 @@ def setup(
             enable_telemetry,
             redis_image,
             rabbitmq_image,
+            max_full_history_runs=max_full_history_runs,
+            max_compact_history_runs=max_compact_history_runs,
             is_update=terraform_is_update,
         )
     if (
@@ -2049,6 +2060,8 @@ def _dispatch_unlocked(
             registry_port=args.registry_port,
             redis_image=args.redis_image,
             rabbitmq_image=args.rabbitmq_image,
+            max_full_history_runs=args.max_full_history_runs,
+            max_compact_history_runs=args.max_compact_history_runs,
         )
     elif args.action in {"destroy", "delete", "remove", "rm"}:
         return destroy(k3d, data_path=data_path)
