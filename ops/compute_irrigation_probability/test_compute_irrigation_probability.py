@@ -4,7 +4,8 @@
 import numpy as np
 import pytest
 import xarray as xr
-from compute_irrigation_probability import CallbackBuilder, LogisticRegression
+from compute_irrigation_probability import CallbackBuilder
+from sklearn.linear_model import LogisticRegression
 
 
 def test_distinct_ngi_egi_coefficients(monkeypatch: pytest.MonkeyPatch):
@@ -29,7 +30,11 @@ def test_distinct_ngi_egi_coefficients(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(LogisticRegression, "predict_proba", capture_coefficients)
 
-    with pytest.raises(RuntimeError, match="stop after coefficient capture"):
-        CallbackBuilder(1.0, 2.0, 3.0, 4.0)()(landsat, ngi, egi, lst, cloud_mask)  # type: ignore
+    builder = CallbackBuilder(1.0, 2.0, 3.0, 4.0)
+    try:
+        with pytest.raises(RuntimeError, match="stop after coefficient capture"):
+            builder()(landsat, ngi, egi, lst, cloud_mask)  # type: ignore
+    finally:
+        builder.tmp_dir.cleanup()
 
     np.testing.assert_array_equal(captured["coef"], [[1.0, 2.0, 3.0]])
