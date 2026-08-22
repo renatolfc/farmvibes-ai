@@ -85,27 +85,32 @@ def test_generate_api_documentation_page(request_client: requests.Session):
 
 @pytest.mark.parametrize("params", [None, {"param1": "new_param"}])
 @patch("vibe_server.server.send", return_value="OK")
+@patch.object(StateStore, "store_if_absent")
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 @patch.object(StateStore, "retrieve_bulk", side_effect=lambda _: [])
-@patch.object(StateStore, "retrieve_with_etag", side_effect=lambda _: ([], None))
+@patch.object(StateStore, "retrieve_with_etag")
 def test_workflow_submission(
-    _: MagicMock,
+    retrieve_with_etag: MagicMock,
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    store_if_absent: MagicMock,
     send: MagicMock,
     workflow_run_config: Dict[str, Any],
     params: Dict[str, Any],
     request_client: requests.Session,
 ):
+    retrieve_with_etag.side_effect = [([], None), ([], "1")]
     workflow_run_config["parameters"] = params
     response = request_client.post("/v0/runs", json=workflow_run_config)
     send.assert_called()
     assert send.call_args[0][0].content.parameters == params
 
     assert response.status_code == 201
+    store_if_absent.assert_awaited_once_with(RUNS_KEY, [])
     assert len(transaction.call_args.args[0]) == 2
+    assert transaction.call_args.args[0][0]["etag"] == "1"
     id = response.json()["id"]
     assert transaction.call_args.args[0][0]["value"][0] == id
     submitted_config = asdict(transaction.call_args.args[0][1]["value"])
@@ -156,9 +161,11 @@ def test_workflow_submission_retries_run_index_conflict(
     assert transaction.call_args_list[1].args[0][0]["etag"] == "2"
 
 
+@pytest.mark.parametrize("backend", ["redis", "cosmos"])
 @pytest.mark.anyio
 async def test_independent_providers_create_missing_run_index_without_lost_updates(
     workflow_run_config: Dict[str, Any],
+    backend: str,
 ):
     state: Dict[str, Any] = {}
     version = 0
@@ -166,7 +173,7 @@ async def test_independent_providers_create_missing_run_index_without_lost_updat
     all_read_missing = asyncio.Event()
     state_lock = asyncio.Lock()
 
-    async def retrieve_with_etag(key: str):
+    async def retrieve_with_etag(key: str, **_: Any):
         nonlocal missing_reads
         async with state_lock:
             if key in state:
@@ -181,14 +188,23 @@ async def test_independent_providers_create_missing_run_index_without_lost_updat
         value, _ = await retrieve_with_etag(key)
         return value
 
+    async def store_if_absent(key: str, value: Any):
+        nonlocal version
+        async with state_lock:
+            if key in state:
+                raise StateStoreConflictError(f"{backend} create conflict")
+            state[key] = deepcopy(value)
+            version += 1
+
     async def transaction(operations: List[Dict[str, Any]]):
         nonlocal version
         async with state_lock:
             index_operation = operations[0]
             etag = index_operation.get("etag")
-            current_etag = str(version) if RUNS_KEY in state else "-1"
-            if etag != current_etag:
-                raise StateStoreConflictError("etag mismatch")
+            if RUNS_KEY not in state:
+                raise RuntimeError(f"{backend} run index was not initialized")
+            if etag != str(version):
+                raise StateStoreConflictError(f"{backend} first-write conflict")
             for operation in operations:
                 state[operation["key"]] = deepcopy(operation.get("value"))
             version += 1
@@ -200,6 +216,7 @@ async def test_independent_providers_create_missing_run_index_without_lost_updat
     provider_stores = [StateStore(), StateStore()]
     for provider, store in zip(providers, provider_stores):
         store.retrieve_with_etag = AsyncMock(side_effect=retrieve_with_etag)
+        store.store_if_absent = AsyncMock(side_effect=store_if_absent)
         store.transaction = AsyncMock(side_effect=transaction)
         provider.state_store = store
 
@@ -223,9 +240,11 @@ async def test_independent_providers_create_missing_run_index_without_lost_updat
     assert len(run_ids) == 2
     assert startup_runs == []
     for store in provider_stores:
+        store.store_if_absent.assert_awaited_once_with(RUNS_KEY, [])
         first_index_write = store.transaction.call_args_list[0].args[0][0]
-        assert first_index_write["etag"] == "-1"
+        assert first_index_write["etag"]
         assert first_index_write["options"]["concurrency"] == "first-write"
+        assert first_index_write["options"]["consistency"] == "strong"
     startup_store.assert_not_awaited()
 
 
@@ -377,7 +396,7 @@ def test_missing_field_workflow_submission(
 @patch.object(
     TerravibesProvider,
     "list_runs_from_store_with_etag",
-    side_effect=lambda: ([], None),
+    side_effect=lambda: ([], "1"),
 )
 def test_submit_local_workflows_with_broken_work_submission(
     _, __: Any, ___: Any, workflow_run_config: Dict[str, Any], request_client: requests.Session
@@ -388,22 +407,26 @@ def test_submit_local_workflows_with_broken_work_submission(
 
 @patch("vibe_server.server.send", return_value="OK")
 @patch.object(TerravibesProvider, "submit_work")
+@patch.object(StateStore, "store_if_absent")
 @patch.object(StateStore, "transaction")
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
 @patch.object(StateStore, "retrieve_bulk")
-@patch.object(StateStore, "retrieve_with_etag", side_effect=lambda _: ([], None))
+@patch.object(StateStore, "retrieve_with_etag")
 def test_workflow_submission_and_cancellation(
     retrieve_with_etag: MagicMock,
     retrieve_bulk: MagicMock,
     retrieve: MagicMock,
     transaction: MagicMock,
+    store_if_absent: MagicMock,
     submit_work: MagicMock,
     send: MagicMock,
     workflow_run_config: Dict[str, Any],
     request_client: requests.Session,
 ):
+    retrieve_with_etag.side_effect = [([], None), ([], "1")]
     response = request_client.post("/v0/runs", json=workflow_run_config)
     assert response.status_code == 201
+    store_if_absent.assert_awaited_once_with(RUNS_KEY, [])
     assert len(transaction.call_args.args[0]) == 2
     id = response.json()["id"]
     assert transaction.call_args.args[0][0]["value"][0] == id
@@ -426,7 +449,7 @@ def test_workflow_submission_and_cancellation(
 @patch.object(
     TerravibesProvider,
     "list_runs_from_store_with_etag",
-    side_effect=lambda: ([], None),
+    side_effect=lambda: ([], "1"),
 )
 @patch.object(StateStore, "retrieve")
 @patch.object(StateStore, "retrieve_bulk", side_effect=lambda _: [])

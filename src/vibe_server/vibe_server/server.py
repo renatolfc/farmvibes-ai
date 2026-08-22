@@ -117,8 +117,6 @@ RunList = Union[List[str], List[Dict[str, Any]], JSONResponse]
 WorkflowList = Union[List[str], Dict[str, Any], JSONResponse]
 CreateRunResponse = Union[Dict[str, Union[UUID, str]], JSONResponse]
 RUN_INDEX_UPDATE_RETRIES = 3
-# Redis accepts any ETag for a missing key, while its stored versions are positive.
-RUN_INDEX_CREATE_ETAG = "-1"
 
 
 class WorkflowReturnFormat(StrEnum):
@@ -385,8 +383,17 @@ class TerravibesProvider:
             new_id: Optional[str] = None
             new_run: Optional[RunConfig] = None
             async with self.run_index_lock:
-                for attempt in range(RUN_INDEX_UPDATE_RETRIES):
+                run_ids, runs_etag = await self.list_runs_from_store_with_etag()
+                if runs_etag is None:
+                    try:
+                        await self.state_store.store_if_absent(RUNS_KEY, [])
+                    except StateStoreConflictError:
+                        pass
                     run_ids, runs_etag = await self.list_runs_from_store_with_etag()
+                    if runs_etag is None:
+                        raise RuntimeError("Failed to initialize the workflow run index")
+
+                for attempt in range(RUN_INDEX_UPDATE_RETRIES):
                     if new_run is None:
                         new_id, new_run = self.create_new_run(runConfig, run_ids)
                     else:
@@ -394,13 +401,14 @@ class TerravibesProvider:
                         if retry_id not in run_ids:
                             run_ids.append(retry_id)
                     try:
-                        await self.update_run_state(
-                            run_ids, new_run, runs_etag or RUN_INDEX_CREATE_ETAG
-                        )
+                        await self.update_run_state(run_ids, new_run, runs_etag)
                         break
                     except StateStoreConflictError:
                         if attempt + 1 == RUN_INDEX_UPDATE_RETRIES:
                             raise
+                        run_ids, runs_etag = await self.list_runs_from_store_with_etag()
+                        if runs_etag is None:
+                            raise RuntimeError("Workflow run index disappeared during update")
 
             assert new_run is not None
             add_span_attributes({"run_id": new_id})
@@ -531,7 +539,7 @@ class TerravibesProvider:
     @add_trace
     async def list_runs_from_store_with_etag(self) -> Tuple[List[str], Optional[str]]:
         try:
-            return await self.state_store.retrieve_with_etag(RUNS_KEY)
+            return await self.state_store.retrieve_with_etag(RUNS_KEY, consistency="strong")
         except KeyError:
             return [], None
 

@@ -28,14 +28,17 @@ class TransactionOperation(TypedDict):
 
 
 class StateStoreConflictError(RuntimeError):
-    """Raised when an optimistic state-store transaction loses a race."""
+    """Raised when an optimistic state-store write loses a race."""
 
 
 class StateStoreProtocol(Protocol):
     async def retrieve(self, key: str, traceparent: Optional[str] = None) -> Any: ...
 
     async def retrieve_with_etag(
-        self, key: str, traceparent: Optional[str] = None
+        self,
+        key: str,
+        traceparent: Optional[str] = None,
+        consistency: Optional[str] = None,
     ) -> Tuple[Any, Optional[str]]: ...
 
     async def retrieve_bulk(
@@ -48,6 +51,10 @@ class StateStoreProtocol(Protocol):
     async def retrieve_bulk_existing(self, keys: List[str]) -> Dict[str, Any]: ...
 
     async def store(self, key: str, obj: Any, traceparent: Optional[str] = None) -> None: ...
+
+    async def store_if_absent(
+        self, key: str, obj: Any, traceparent: Optional[str] = None
+    ) -> None: ...
 
     async def delete(self, key: str, traceparent: Optional[str] = None) -> None: ...
 
@@ -72,13 +79,19 @@ class StateStore(StateStoreProtocol):
         return value
 
     async def retrieve_with_etag(
-        self, key: str, traceparent: Optional[str] = None
+        self,
+        key: str,
+        traceparent: Optional[str] = None,
+        consistency: Optional[str] = None,
     ) -> Tuple[Any, Optional[str]]:
         try:
+            params = {"metadata.partitionKey": self.partition_key}
+            if consistency is not None:
+                params["consistency"] = consistency
             response = await self.vibe_dapr_client.get(
                 STATE_URL_TEMPLATE.format(self.state_store, key),
                 traceparent=traceparent,
-                params={"metadata.partitionKey": self.partition_key},
+                params=params,
             )
 
             return (
@@ -161,6 +174,27 @@ class StateStore(StateStoreProtocol):
         )
         assert response.ok, "Failed to store state, but underlying method didn't capture it"
 
+    async def store_if_absent(
+        self, key: str, obj: Any, traceparent: Optional[str] = None
+    ) -> None:
+        response = await self.vibe_dapr_client.post(
+            STATE_URL_TEMPLATE.format(self.state_store, ""),
+            data=[
+                {
+                    "key": key,
+                    "value": self.vibe_dapr_client.obj_json(obj),
+                    "options": {
+                        "concurrency": "first-write",
+                        "consistency": "strong",
+                    },
+                    "metadata": {"partitionKey": self.partition_key},
+                }
+            ],
+            traceparent=traceparent,
+        )
+        if not response.ok:
+            raise StateStoreConflictError(await response.text())
+
     async def delete(self, key: str, traceparent: Optional[str] = None) -> None:
         await self.transaction(
             [TransactionOperation(key=key, operation="delete")],
@@ -191,7 +225,11 @@ class StateStore(StateStoreProtocol):
         )
         if not response.ok:
             body = await response.text()
-            if response.status == 409 or any(
+            optimistic_write = any(
+                operation.get("options", {}).get("concurrency") == "first-write"
+                for operation in operations
+            )
+            if optimistic_write or response.status == 409 or any(
                 marker in body.lower() for marker in ("etag", "first-write", "conflict")
             ):
                 raise StateStoreConflictError(body)

@@ -45,10 +45,11 @@ async def test_retrieve_returns_etag():
         return_value=MockResponse(json.dumps({"value": 1}), {"ETag": "7"})
     )
 
-    value, etag = await store.retrieve_with_etag("key")
+    value, etag = await store.retrieve_with_etag("key", consistency="strong")
 
     assert value == {"value": 1}
     assert etag == "7"
+    assert store.vibe_dapr_client.get.call_args.kwargs["params"]["consistency"] == "strong"
 
 
 @pytest.mark.anyio
@@ -63,10 +64,36 @@ async def test_delete_uses_transaction_delete_operation():
 
 
 @pytest.mark.anyio
+async def test_store_if_absent_uses_portable_first_write():
+    store = StateStore()
+    store.vibe_dapr_client.post = AsyncMock(return_value=MockResponse(""))
+
+    await store.store_if_absent("runs", [])
+
+    request = store.vibe_dapr_client.post.call_args.kwargs["data"][0]
+    assert "etag" not in request
+    assert request["options"] == {
+        "concurrency": "first-write",
+        "consistency": "strong",
+    }
+
+
+@pytest.mark.anyio
+async def test_store_if_absent_reports_redis_create_conflict():
+    store = StateStore()
+    store.vibe_dapr_client.post = AsyncMock(
+        return_value=MockResponse("failed to set key runs", ok=False, status=500)
+    )
+
+    with pytest.raises(StateStoreConflictError):
+        await store.store_if_absent("runs", [])
+
+
+@pytest.mark.anyio
 async def test_transaction_reports_etag_conflict():
     store = StateStore()
     store.vibe_dapr_client.post = AsyncMock(
-        return_value=MockResponse("possible etag mismatch", ok=False, status=500)
+        return_value=MockResponse("failed to set key runs", ok=False, status=500)
     )
 
     with pytest.raises(StateStoreConflictError):

@@ -48,6 +48,7 @@ DEFAULT_MAX_FULL_HISTORY_RUNS = 100
 DEFAULT_MAX_COMPACT_HISTORY_RUNS = 900
 HISTORY_MAINTENANCE_BATCH_SIZE = 10
 HISTORY_MAINTENANCE_SCAN_SIZE = 100
+HISTORY_MAINTENANCE_INTERVAL_S = 60
 HISTORY_INDEX_UPDATE_RETRIES = 3
 WORKFLOW_TASK_KEY_PATTERN = "????????-????-????-????-????????????-*"
 
@@ -75,6 +76,7 @@ class DataOpsManager:
     otel_service_name: str
     statestore_lock: asyncio.Lock
     history_maintenance_lock: asyncio.Lock
+    history_maintenance_task: Optional[asyncio.Task[None]]
     history_compaction_offset: int
     history_deletion_offset: int
     legacy_task_keys: Optional[Dict[str, List[str]]]
@@ -125,6 +127,7 @@ class DataOpsManager:
         self.max_compact_history_runs = max_compact_history_runs
         self.scan_redis_workflow_state = scan_redis_workflow_state
         self.legacy_task_keys = None
+        self.history_maintenance_task = None
 
         self._setup_routes()
 
@@ -135,17 +138,34 @@ class DataOpsManager:
         self.history_maintenance_lock = asyncio.Lock()
         self.history_compaction_offset = 0
         self.history_deletion_offset = 0
-        self.history_maintenance_task: Optional[asyncio.Task[None]] = None
 
     def _setup_routes(self):
         @self.app.startup()
         def startup():
+            if (
+                self.history_maintenance_task is not None
+                and not self.history_maintenance_task.done()
+            ):
+                return
             # locks have to be be created on the app's (uvicorn's) event loop
             self._init_locks()
+            if self.max_full_history_runs is None:
+                return
             # Dapr is not available until the app startup hook returns.
             self.history_maintenance_task = asyncio.create_task(
-                self._maintain_history_safely()
+                self._maintain_history_periodically()
             )
+
+        @self.app.shutdown()
+        async def shutdown():
+            if self.history_maintenance_task is None:
+                return
+            self.history_maintenance_task.cancel()
+            try:
+                await self.history_maintenance_task
+            except asyncio.CancelledError:
+                pass
+            self.history_maintenance_task = None
 
         @self.app.subscribe_async(self.pubsubname, self.status_topic)
         async def fetch_work(event: v1.Event) -> TopicEventResponse:
@@ -322,8 +342,15 @@ class DataOpsManager:
     async def _maintain_history_safely(self) -> None:
         try:
             await self.maintain_history()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logging.exception("Failed to maintain workflow run history")
+
+    async def _maintain_history_periodically(self) -> None:
+        while True:
+            await self._maintain_history_safely()
+            await asyncio.sleep(HISTORY_MAINTENANCE_INTERVAL_S)
 
     async def maintain_history(self) -> None:
         """Compact and delete a bounded slice of old workflow history."""

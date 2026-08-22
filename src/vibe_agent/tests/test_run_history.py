@@ -6,12 +6,17 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call, patch
 from uuid import UUID, uuid4
 
 import pytest
 
-from vibe_agent.data_ops import WORKFLOW_TASK_KEY_PATTERN, DataOpsManager
+from vibe_agent.data_ops import (
+    HISTORY_MAINTENANCE_BATCH_SIZE,
+    HISTORY_MAINTENANCE_INTERVAL_S,
+    WORKFLOW_TASK_KEY_PATTERN,
+    DataOpsManager,
+)
 from vibe_common.constants import RUNS_KEY
 from vibe_common.statestore import StateStoreConflictError, TransactionOperation
 from vibe_core.datamodel import RunConfig, RunDetails, RunStatus
@@ -116,15 +121,103 @@ def history_manager(
 @pytest.mark.anyio
 async def test_startup_defers_history_maintenance_until_app_is_ready():
     manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
-    manager._maintain_history_safely = AsyncMock()  # type: ignore
+    started = asyncio.Event()
+
+    async def wait_for_shutdown():
+        started.set()
+        await asyncio.Event().wait()
+
+    manager._maintain_history_periodically = AsyncMock(side_effect=wait_for_shutdown)  # type: ignore
     startup = manager.app.app.router.on_startup[0]
+    shutdown = manager.app.app.router.on_shutdown[0]
 
     assert startup() is None
-    manager._maintain_history_safely.assert_not_awaited()  # type: ignore
+    task = manager.history_maintenance_task
+    assert task is not None
+    try:
+        assert not started.is_set()
+        assert startup() is None
+        assert manager.history_maintenance_task is task
+        await asyncio.wait_for(started.wait(), 1)
+        manager._maintain_history_periodically.assert_awaited_once()  # type: ignore
+    finally:
+        await shutdown()
 
+    assert task.cancelled()
+    assert manager.history_maintenance_task is None
+
+
+@pytest.mark.anyio
+async def test_disabled_history_retention_starts_no_maintenance_task():
+    manager = DataOpsManager(Mock(), Mock())
+    manager._maintain_history_periodically = AsyncMock()  # type: ignore
+
+    manager.app.app.router.on_startup[0]()
     await asyncio.sleep(0)
 
-    manager._maintain_history_safely.assert_awaited_once()  # type: ignore
+    assert manager.history_maintenance_task is None
+    manager._maintain_history_periodically.assert_not_awaited()  # type: ignore
+
+
+@pytest.mark.anyio
+async def test_safe_history_maintenance_remains_one_shot():
+    manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
+    manager.maintain_history = AsyncMock()  # type: ignore
+
+    await manager._maintain_history_safely()
+
+    manager.maintain_history.assert_awaited_once()  # type: ignore
+
+
+@pytest.mark.anyio
+async def test_history_maintenance_errors_back_off_and_continue(caplog: pytest.LogCaptureFixture):
+    manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
+    manager.maintain_history = AsyncMock(side_effect=[RuntimeError("temporary failure"), None])  # type: ignore
+    sleep = AsyncMock(side_effect=[None, asyncio.CancelledError])
+
+    with patch("vibe_agent.data_ops.asyncio.sleep", sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._maintain_history_periodically()
+
+    assert manager.maintain_history.await_count == 2  # type: ignore
+    assert sleep.await_args_list == [
+        call(HISTORY_MAINTENANCE_INTERVAL_S),
+        call(HISTORY_MAINTENANCE_INTERVAL_S),
+    ]
+    assert "Failed to maintain workflow run history" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_periodic_maintenance_revisits_active_run_after_it_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_id = str(uuid4())
+    state = FakeStateStore({RUNS_KEY: [run_id], run_id: run_record(run_id, RunStatus.running, [])})
+    manager = history_manager(state, max_full=0, max_compact=0)
+    delete_history_run = AsyncMock(wraps=manager._delete_history_run)
+    manager._delete_history_run = delete_history_run  # type: ignore
+    monkeypatch.setattr("vibe_agent.data_ops.HISTORY_MAINTENANCE_INTERVAL_S", 0.001)
+    startup = manager.app.app.router.on_startup[0]
+    shutdown = manager.app.app.router.on_shutdown[0]
+
+    startup()
+    try:
+        for _ in range(100):
+            if delete_history_run.await_count:
+                break
+            await asyncio.sleep(0.001)
+        assert delete_history_run.await_count
+        assert run_id in state.data
+
+        state.data[run_id] = run_record(run_id, RunStatus.done, [])
+        for _ in range(100):
+            if run_id not in state.data:
+                break
+            await asyncio.sleep(0.001)
+        assert run_id not in state.data
+        assert state.data[RUNS_KEY] == []
+    finally:
+        await shutdown()
 
 
 @pytest.mark.anyio
@@ -198,6 +291,30 @@ async def test_zero_limits_hard_delete_terminal_history():
     assert state.data[RUNS_KEY] == []
     assert run_id not in state.data
     assert f"{run_id}-task" not in state.data
+
+
+@pytest.mark.anyio
+async def test_large_history_backlog_converges_across_bounded_passes():
+    run_ids = [str(uuid4()) for _ in range(2001)]
+    state = FakeStateStore({RUNS_KEY: run_ids})
+    manager = history_manager(state, max_full=0, max_compact=0)
+
+    async def delete_run(run_id: str) -> bool:
+        state.data[RUNS_KEY].remove(run_id)
+        return True
+
+    manager._delete_history_run = AsyncMock(side_effect=delete_run)  # type: ignore
+    for _ in range(len(run_ids)):
+        before = len(state.data[RUNS_KEY])
+        await manager.maintain_history()
+        removed = before - len(state.data[RUNS_KEY])
+        assert 0 < removed <= HISTORY_MAINTENANCE_BATCH_SIZE
+        if not state.data[RUNS_KEY]:
+            break
+    else:
+        pytest.fail("history backlog did not converge")
+
+    assert manager._delete_history_run.await_count == len(run_ids)  # type: ignore
 
 
 @pytest.mark.anyio
