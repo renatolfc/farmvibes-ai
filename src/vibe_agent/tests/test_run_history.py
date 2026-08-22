@@ -7,7 +7,7 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -76,7 +76,7 @@ def run_record(run_id: str, status: RunStatus, tasks: List[str]) -> Dict[str, An
             workflow="helloworld",
             parameters={"keep": True},
             user_input={"input": "preserved"},
-            id=run_id,
+            id=UUID(run_id),
             details=RunDetails(
                 submission_time=datetime.now(),
                 end_time=datetime.now() if status != RunStatus.running else None,

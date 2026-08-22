@@ -149,7 +149,7 @@ class App:
         return decorator
 
     def startup(self):
-        def decorator(func: Callable[[], None]):
+        def decorator(func: Callable[[], Union[None, Awaitable[None]]]):
             self.app.add_event_handler("startup", func)
 
         return decorator
