@@ -88,9 +88,10 @@ def find_redis_master(kubectl: KubectlWrapper) -> Tuple[str, ...]:
             break
     if not redis_master_pod:
         log("Unable to find redis master pod", level="warning")
-        redis_statefulset = kubectl.get_or_none(
-            "statefulset", "redis-master"
-        )
+        with kubectl.context():
+            redis_statefulset = kubectl.get_or_none(
+                "statefulset", "redis-master"
+            )
         if redis_statefulset is None:
             return ("", "", "")
         kind = redis_statefulset["kind"]

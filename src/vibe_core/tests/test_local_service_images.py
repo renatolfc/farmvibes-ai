@@ -7,7 +7,7 @@ import os
 import socket
 import subprocess
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import Mock, call
@@ -37,6 +37,39 @@ def configure_artifacts(
     artifacts.config_dir = tmp_path / "config"
     artifacts.private_config_dir = artifacts.config_dir / "private"
     artifacts.private_config_dir.mkdir(parents=True, exist_ok=True)
+
+
+def test_find_redis_master_uses_target_context_when_scaled_down():
+    active_context = False
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.list_pods.return_value = {"items": []}
+
+    @contextmanager
+    def target_context():
+        nonlocal active_context
+        active_context = True
+        try:
+            yield
+        finally:
+            active_context = False
+
+    def get_or_none(kind: str, name: str):
+        assert active_context
+        assert (kind, name) == ("statefulset", "redis-master")
+        return {
+            "kind": "StatefulSet",
+            "metadata": {"name": "redis-master"},
+        }
+
+    kubectl.context.side_effect = target_context
+    kubectl.get_or_none.side_effect = get_or_none
+
+    assert local.find_redis_master(kubectl) == (
+        "",
+        "redis-master",
+        "StatefulSet",
+    )
+    assert active_context is False
 
 
 def test_local_parser_service_image_defaults_and_overrides():
