@@ -227,7 +227,7 @@ def test_whatif_request(
         os.path.dirname(os.path.abspath(__file__)), "whatif_comet_local_op.yaml"
     )
     scenario = deepcopy(fake_comet_response["Day"]["Cropland"]["ModelRun"]["Scenario"][0])
-    scenario["@name"] = "scenario: 17/03/2023 16:00:01"
+    scenario["@name"] = "Scenario: 17/03/2023 16:00:01"
     scenario["Carbon"]["SoilCarbon"] = "4321"
     fake_comet_response["Day"]["Cropland"]["ModelRun"]["Scenario"].insert(0, scenario)
     parse_comet_response.return_value = fake_comet_response
