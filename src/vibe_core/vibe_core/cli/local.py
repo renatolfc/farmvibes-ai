@@ -8,6 +8,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -1087,7 +1088,7 @@ def destroy_old_registry(os_artifacts: OSArtifacts) -> bool:
             f"{OLD_DEFAULT_CLUSTER_NAME}-registry",
             f"k3d-{OLD_DEFAULT_CLUSTER_NAME}-registry.localhost",
         ):
-            if docker.get(container_name):
+            if docker.get(f"^/{re.escape(container_name)}$"):
                 docker.rm(container_name)
         return True
     except Exception as e:
