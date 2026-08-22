@@ -102,5 +102,5 @@ variable "farmvibes_log_level" {
 
 variable "environment" {
   description = "Unused"
-  default = ""
+  default     = ""
 }
