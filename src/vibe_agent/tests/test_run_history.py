@@ -3,7 +3,7 @@
 
 import asyncio
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, Mock
@@ -35,7 +35,9 @@ class FakeStateStore:
         return [await self.retrieve(key) for key in keys]
 
     async def store(self, key: str, value: Any) -> None:
-        self.data[key] = asdict(value) if is_dataclass(value) else deepcopy(value)
+        self.data[key] = (
+            asdict(value) if isinstance(value, (RunConfig, RunDetails)) else deepcopy(value)
+        )
         self.versions[key] = self.versions.get(key, 0) + 1
 
     async def transaction(self, operations: List[TransactionOperation]) -> None:
@@ -56,7 +58,11 @@ class FakeStateStore:
                 updated.pop(key, None)
             else:
                 value = operation.get("value")
-                updated[key] = asdict(value) if is_dataclass(value) else deepcopy(value)
+                updated[key] = (
+                    asdict(value)
+                    if isinstance(value, (RunConfig, RunDetails))
+                    else deepcopy(value)
+                )
         self.data = updated
         for operation in operations:
             key = operation["key"]
