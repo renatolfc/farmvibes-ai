@@ -1053,7 +1053,7 @@ def restore_redis_data(
             except Exception as error:
                 cleanup_error = error
 
-        if scaled_down and cleanup_error is None:
+        if scaled_down:
             try:
                 kubectl.scale(kind, redis_master, 1)
             except Exception as error:
