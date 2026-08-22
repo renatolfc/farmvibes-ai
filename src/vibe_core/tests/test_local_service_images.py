@@ -289,6 +289,21 @@ def test_destroy_dispatch_uses_saved_storage_path(
     assert captured["data_path"] == str(storage_path / local.DATA_SUFFIX)
 
 
+def test_destroy_old_registry_removes_legacy_container_only(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    docker = Mock()
+    docker.get.side_effect = ("legacy-id", "")
+    monkeypatch.setattr(local, "DockerWrapper", Mock(return_value=docker))
+
+    assert local.destroy_old_registry(Mock(spec=OSArtifacts))
+    assert docker.get.call_args_list == [
+        call("farmvibes-ai-registry"),
+        call("k3d-farmvibes-ai-registry.localhost"),
+    ]
+    docker.rm.assert_called_once_with("farmvibes-ai-registry")
+
+
 def test_pending_setup_preserves_checkpointed_options(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
