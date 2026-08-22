@@ -23,7 +23,7 @@ def test_distinct_ngi_egi_coefficients(monkeypatch: pytest.MonkeyPatch):
         lambda raster, _: xr.DataArray(rasters[raster], dims=("band", "y", "x")),
     )
 
-    def capture_coefficients(model: LogisticRegression, _: np.ndarray):
+    def capture_coefficients(model: LogisticRegression, _: object):
         captured["coef"] = model.coef_
         raise RuntimeError("stop after coefficient capture")
 
