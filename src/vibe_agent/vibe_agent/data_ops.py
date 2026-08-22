@@ -135,13 +135,17 @@ class DataOpsManager:
         self.history_maintenance_lock = asyncio.Lock()
         self.history_compaction_offset = 0
         self.history_deletion_offset = 0
+        self.history_maintenance_task: Optional[asyncio.Task[None]] = None
 
     def _setup_routes(self):
         @self.app.startup()
-        async def startup():
+        def startup():
             # locks have to be be created on the app's (uvicorn's) event loop
             self._init_locks()
-            await self._maintain_history_safely()
+            # Dapr is not available until the app startup hook returns.
+            self.history_maintenance_task = asyncio.create_task(
+                self._maintain_history_safely()
+            )
 
         @self.app.subscribe_async(self.pubsubname, self.status_topic)
         async def fetch_work(event: v1.Event) -> TopicEventResponse:

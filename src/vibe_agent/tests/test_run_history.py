@@ -114,6 +114,20 @@ def history_manager(
 
 
 @pytest.mark.anyio
+async def test_startup_defers_history_maintenance_until_app_is_ready():
+    manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
+    manager._maintain_history_safely = AsyncMock()  # type: ignore
+    startup = manager.app.app.router.on_startup[0]
+
+    assert startup() is None
+    manager._maintain_history_safely.assert_not_awaited()  # type: ignore
+
+    await asyncio.sleep(0)
+
+    manager._maintain_history_safely.assert_awaited_once()  # type: ignore
+
+
+@pytest.mark.anyio
 async def test_history_retention_is_disabled_without_both_limits():
     run_id = str(uuid4())
     original = run_record(run_id, RunStatus.done, ["task"])
