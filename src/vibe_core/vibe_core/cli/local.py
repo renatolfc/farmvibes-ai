@@ -4,6 +4,7 @@
 import argparse
 import base64
 import codecs
+import errno
 import hashlib
 import json
 import os
@@ -844,6 +845,16 @@ def complete_redis_migration(
         )
 
 
+def _acquire_windows_lock(descriptor: int, lock_module: Any):
+    while True:
+        try:
+            lock_module.locking(descriptor, lock_module.LK_LOCK, 1)
+            return
+        except OSError as error:
+            if error.errno != errno.EACCES:
+                raise
+
+
 @contextmanager
 def local_cluster_lock(
     os_artifacts: OSArtifacts, cluster_name: str
@@ -852,24 +863,27 @@ def local_cluster_lock(
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     os.chmod(path, 0o600)
     lock_module = __import__("msvcrt" if os.name == "nt" else "fcntl")
+    locked = False
     try:
         if os.name == "nt":
             if os.path.getsize(path) == 0:
                 os.write(descriptor, b" ")
             os.lseek(descriptor, 0, os.SEEK_SET)
-            lock_module.locking(descriptor, lock_module.LK_LOCK, 1)
+            _acquire_windows_lock(descriptor, lock_module)
         else:
             lock_module.flock(descriptor, lock_module.LOCK_EX)
+        locked = True
         os.ftruncate(descriptor, 0)
         os.write(descriptor, str(os.getpid()).encode())
         os.fsync(descriptor)
         yield
     finally:
-        if os.name == "nt":
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            lock_module.locking(descriptor, lock_module.LK_UNLCK, 1)
-        else:
-            lock_module.flock(descriptor, lock_module.LOCK_UN)
+        if locked:
+            if os.name == "nt":
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                lock_module.locking(descriptor, lock_module.LK_UNLCK, 1)
+            else:
+                lock_module.flock(descriptor, lock_module.LOCK_UN)
         os.close(descriptor)
 
 

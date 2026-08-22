@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import base64
+import errno
 import json
 import os
 import socket
@@ -70,6 +71,29 @@ def test_find_redis_master_uses_target_context_when_scaled_down():
         "StatefulSet",
     )
     assert active_context is False
+
+
+def test_windows_lock_retries_contention_until_acquired():
+    lock_module = Mock(LK_LOCK=1, LK_UNLCK=2)
+    lock_module.locking.side_effect = [
+        OSError(errno.EACCES, "locked"),
+        OSError(errno.EACCES, "locked"),
+        None,
+    ]
+
+    local._acquire_windows_lock(42, lock_module)
+
+    assert lock_module.locking.call_count == 3
+
+
+def test_windows_lock_propagates_non_contention_errors():
+    lock_module = Mock(LK_LOCK=1, LK_UNLCK=2)
+    lock_module.locking.side_effect = OSError(errno.EBADF, "bad descriptor")
+
+    with pytest.raises(OSError, match="bad descriptor"):
+        local._acquire_windows_lock(42, lock_module)
+
+    lock_module.locking.assert_called_once()
 
 
 def test_local_parser_service_image_defaults_and_overrides():
