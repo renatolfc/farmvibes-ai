@@ -604,6 +604,33 @@ def test_restore_redis_data_fails_until_redis_is_ready(
     )
 
 
+def test_restore_redis_data_restarts_redis_when_helper_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.create_redis_volume_pod.return_value = True
+    kubectl.delete.side_effect = ValueError("Unable to delete helper pod")
+    (tmp_path / local.REDIS_DUMP).touch()
+    monkeypatch.setattr(
+        local,
+        "find_redis_master",
+        lambda kubectl: ("redis-master-0", "redis-master", "StatefulSet"),
+    )
+
+    assert not local.restore_redis_data(
+        kubectl,
+        str(tmp_path),
+        skip_confirmation=True,
+        redis_image=CUSTOM_REDIS_IMAGE,
+    )
+    assert kubectl.scale.call_args_list == [
+        call("StatefulSet", "redis-master", 0),
+        call("StatefulSet", "redis-master", 1),
+    ]
+    kubectl.rollout_status.assert_not_called()
+
+
 def test_k3d_cluster_config_reads_live_topology(
     monkeypatch: pytest.MonkeyPatch,
 ):
