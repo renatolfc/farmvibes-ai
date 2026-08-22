@@ -6,7 +6,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from typing_extensions import NotRequired, Required, TypedDict
 
@@ -29,6 +29,12 @@ class TransactionOperation(TypedDict):
 
 class StateStoreConflictError(RuntimeError):
     """Raised when an optimistic state-store write loses a race."""
+
+
+class _StateStoreBulkError(KeyError):
+    def __init__(self, missing: Set[str], values: Dict[str, Optional[Any]]):
+        super().__init__(f"Failed to retrieve keys {missing} from state store.")
+        self.values = values
 
 
 class StateStoreProtocol(Protocol):
@@ -131,9 +137,10 @@ class StateStore(StateStoreProtocol):
             for state in states
             if isinstance(state, dict) and "key" in state
         }
+
         missing = {key for key in keys if state_by_key.get(key) is None}
         if missing:
-            raise KeyError(f"Failed to retrieve keys {missing} from state store.")
+            raise _StateStoreBulkError(missing, state_by_key)
         return [state_by_key[key] for key in keys]
 
     async def retrieve_bulk_existing(self, keys: List[str]) -> Dict[str, Any]:
@@ -141,10 +148,11 @@ class StateStore(StateStoreProtocol):
             return {}
         try:
             values = await self.retrieve_bulk(keys)
-            if len(values) == len(keys):
-                return {key: value for key, value in zip(keys, values) if value is not None}
+            state_by_key = dict(zip(keys, values))
+        except _StateStoreBulkError as e:
+            state_by_key = e.values
         except KeyError:
-            pass
+            state_by_key = {}
 
         async def retrieve_one(key: str) -> Tuple[str, Optional[Any]]:
             try:
@@ -152,9 +160,14 @@ class StateStore(StateStoreProtocol):
             except KeyError:
                 return key, None
 
-        existing: Dict[str, Any] = {}
-        for start in range(0, len(keys), DEFAULT_BULK_PARALLELISM):
-            chunk = keys[start : start + DEFAULT_BULK_PARALLELISM]
+        existing = {
+            key: state_by_key[key]
+            for key in keys
+            if key in state_by_key and state_by_key[key] is not None
+        }
+        missing = [key for key in keys if key not in existing]
+        for start in range(0, len(missing), DEFAULT_BULK_PARALLELISM):
+            chunk = missing[start : start + DEFAULT_BULK_PARALLELISM]
             for key, value in await asyncio.gather(*(retrieve_one(key) for key in chunk)):
                 if value is not None:
                     existing[key] = value

@@ -76,6 +76,7 @@ class DataOpsManager:
     otel_service_name: str
     statestore_lock: asyncio.Lock
     history_maintenance_lock: asyncio.Lock
+    history_maintenance_wakeup: asyncio.Event
     history_maintenance_task: Optional[asyncio.Task[None]]
     history_compaction_offset: int
     history_deletion_offset: int
@@ -136,6 +137,7 @@ class DataOpsManager:
         self.metadata_store_lock = RWLock(fast=True)
         self.statestore_lock = asyncio.Lock()
         self.history_maintenance_lock = asyncio.Lock()
+        self.history_maintenance_wakeup = asyncio.Event()
         self.history_compaction_offset = 0
         self.history_deletion_offset = 0
 
@@ -247,7 +249,9 @@ class DataOpsManager:
                 MessageType.workflow_execution_request,
                 MessageType.workflow_deletion_request,
             }:
-                await self._maintain_history_safely()
+                task = self.history_maintenance_task
+                if task is not None and not task.done():
+                    self.history_maintenance_wakeup.set()
 
             return TopicEventResponseStatus.success
 
@@ -339,18 +343,29 @@ class DataOpsManager:
             run_data["output"] = ""
             await self.statestore.store(run_id, run_data)
 
-    async def _maintain_history_safely(self) -> None:
+    async def _maintain_history_safely(self) -> bool:
         try:
             await self.maintain_history()
+            return True
         except asyncio.CancelledError:
             raise
         except Exception:
             logging.exception("Failed to maintain workflow run history")
+            return False
 
     async def _maintain_history_periodically(self) -> None:
         while True:
-            await self._maintain_history_safely()
-            await asyncio.sleep(HISTORY_MAINTENANCE_INTERVAL_S)
+            self.history_maintenance_wakeup.clear()
+            if not await self._maintain_history_safely():
+                await asyncio.sleep(HISTORY_MAINTENANCE_INTERVAL_S)
+                continue
+            try:
+                await asyncio.wait_for(
+                    self.history_maintenance_wakeup.wait(),
+                    HISTORY_MAINTENANCE_INTERVAL_S,
+                )
+            except asyncio.TimeoutError:
+                pass
 
     async def maintain_history(self) -> None:
         """Compact and delete a bounded slice of old workflow history."""

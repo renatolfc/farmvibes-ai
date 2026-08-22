@@ -18,6 +18,8 @@ from vibe_agent.data_ops import (
     DataOpsManager,
 )
 from vibe_common.constants import RUNS_KEY
+from vibe_common.dropdapr import TopicEventResponseStatus
+from vibe_common.messaging import MessageType
 from vibe_common.statestore import StateStoreConflictError, TransactionOperation
 from vibe_core.datamodel import RunConfig, RunDetails, RunStatus
 
@@ -164,15 +166,56 @@ async def test_safe_history_maintenance_remains_one_shot():
     manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
     manager.maintain_history = AsyncMock()  # type: ignore
 
-    await manager._maintain_history_safely()
+    assert await manager._maintain_history_safely()
 
     manager.maintain_history.assert_awaited_once()  # type: ignore
 
 
 @pytest.mark.anyio
+async def test_workflow_event_wakes_maintenance_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
+    manager.history_maintenance_task = Mock()  # type: ignore
+    manager.history_maintenance_task.done.return_value = False  # type: ignore
+    manager._maintain_history_safely = AsyncMock()  # type: ignore
+    message = Mock()
+    message.is_valid_for_channel.return_value = True
+    message.header.type = MessageType.workflow_execution_request
+
+    async def accept_event(_: Any, success: Any, __: Any):
+        return await success(message)
+
+    monkeypatch.setattr("vibe_agent.data_ops.accept_or_fail_event_async", accept_event)
+
+    response = await manager.handle_workflow_event(manager.delete_workflow_topic, Mock())
+
+    assert response == TopicEventResponseStatus.success
+    assert manager.history_maintenance_wakeup.is_set()
+    manager._maintain_history_safely.assert_not_awaited()  # type: ignore
+
+
+@pytest.mark.anyio
+async def test_maintenance_wakeup_interrupts_periodic_delay():
+    manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
+    manager.maintain_history = AsyncMock(side_effect=[None, asyncio.CancelledError])  # type: ignore
+    task = asyncio.create_task(manager._maintain_history_periodically())
+
+    while manager.maintain_history.await_count < 1:  # type: ignore
+        await asyncio.sleep(0)
+    manager.history_maintenance_wakeup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert manager.maintain_history.await_count == 2  # type: ignore
+
+
+@pytest.mark.anyio
 async def test_history_maintenance_errors_back_off_and_continue(caplog: pytest.LogCaptureFixture):
     manager = history_manager(FakeStateStore({RUNS_KEY: []}), 100, 900)
-    manager.maintain_history = AsyncMock(side_effect=[RuntimeError("temporary failure"), None])  # type: ignore
+    manager.maintain_history = AsyncMock(  # type: ignore
+        side_effect=[RuntimeError("temporary failure"), RuntimeError("temporary failure")]
+    )
     sleep = AsyncMock(side_effect=[None, asyncio.CancelledError])
 
     with patch("vibe_agent.data_ops.asyncio.sleep", sleep):

@@ -53,6 +53,32 @@ async def test_retrieve_returns_etag():
 
 
 @pytest.mark.anyio
+async def test_bulk_existing_retries_only_missing_entries():
+    store = StateStore()
+    store.vibe_dapr_client.post = AsyncMock(
+        return_value=MockResponse(
+            json.dumps(
+                [
+                    {"key": "first", "data": {"value": 1}},
+                    {"key": "missing", "data": None},
+                    {"key": "last", "data": {"value": 3}},
+                ]
+            )
+        )
+    )
+    store.retrieve = AsyncMock(return_value={"value": 2})
+
+    values = await store.retrieve_bulk_existing(["first", "missing", "last"])
+
+    assert values == {
+        "first": {"value": 1},
+        "missing": {"value": 2},
+        "last": {"value": 3},
+    }
+    store.retrieve.assert_awaited_once_with("missing")
+
+
+@pytest.mark.anyio
 async def test_delete_uses_transaction_delete_operation():
     store = StateStore()
     store.vibe_dapr_client.post = AsyncMock(return_value=MockResponse(""))
