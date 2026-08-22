@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import asyncio
+import json
 from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
@@ -10,15 +11,17 @@ from uuid import uuid4 as uuid
 
 import pytest
 import requests
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from vibe_common.constants import CONTROL_STATUS_PUBSUB, WORKFLOW_REQUEST_PUBSUB_TOPIC
+from vibe_common.constants import CONTROL_STATUS_PUBSUB, RUNS_KEY, WORKFLOW_REQUEST_PUBSUB_TOPIC
 from vibe_common.messaging import WorkflowCancellationMessage
 from vibe_common.statestore import DEFAULT_BULK_PARALLELISM, StateStore, StateStoreConflictError
 from vibe_core.data.core_types import InnerIOType
 from vibe_core.data.utils import StacConverter, deserialize_stac
 from vibe_core.datamodel import RunConfig, RunConfigInput, RunDetails, RunStatus
 from vibe_server.href_handler import BlobHrefHandler, LocalHrefHandler
+from vibe_server.orchestrator import Orchestrator
 from vibe_server.server import TerravibesAPI, TerravibesProvider
 from vibe_server.workflow.input_handler import build_args_for_workflow
 from vibe_server.workflow.workflow import load_workflow_by_name
@@ -151,6 +154,79 @@ def test_workflow_submission_retries_run_index_conflict(
     assert transaction.call_args_list[0].args[0][0]["value"] == ["older", run_id]
     assert transaction.call_args_list[1].args[0][0]["value"] == ["concurrent", run_id]
     assert transaction.call_args_list[1].args[0][0]["etag"] == "2"
+
+
+@pytest.mark.anyio
+async def test_independent_providers_create_missing_run_index_without_lost_updates(
+    workflow_run_config: Dict[str, Any],
+):
+    state: Dict[str, Any] = {}
+    version = 0
+    missing_reads = 0
+    all_read_missing = asyncio.Event()
+    state_lock = asyncio.Lock()
+
+    async def retrieve_with_etag(key: str):
+        nonlocal missing_reads
+        async with state_lock:
+            if key in state:
+                return deepcopy(state[key]), str(version)
+            missing_reads += 1
+            if missing_reads == 3:
+                all_read_missing.set()
+        await all_read_missing.wait()
+        raise KeyError(key)
+
+    async def retrieve(key: str):
+        value, _ = await retrieve_with_etag(key)
+        return value
+
+    async def transaction(operations: List[Dict[str, Any]]):
+        nonlocal version
+        async with state_lock:
+            index_operation = operations[0]
+            etag = index_operation.get("etag")
+            current_etag = str(version) if RUNS_KEY in state else "-1"
+            if etag != current_etag:
+                raise StateStoreConflictError("etag mismatch")
+            for operation in operations:
+                state[operation["key"]] = deepcopy(operation.get("value"))
+            version += 1
+
+    providers = [
+        TerravibesProvider(LocalHrefHandler(".")),
+        TerravibesProvider(LocalHrefHandler(".")),
+    ]
+    provider_stores = [StateStore(), StateStore()]
+    for provider, store in zip(providers, provider_stores):
+        store.retrieve_with_etag = AsyncMock(side_effect=retrieve_with_etag)
+        store.transaction = AsyncMock(side_effect=transaction)
+        provider.state_store = store
+
+    orchestrator = Orchestrator()
+    orchestrator.statestore.retrieve = AsyncMock(side_effect=retrieve)
+    startup_store = AsyncMock()
+    orchestrator.statestore.store = startup_store
+
+    with patch.object(TerravibesProvider, "submit_work"):
+        first, second, startup_runs = await asyncio.gather(
+            providers[0].create_run(RunConfigInput(**deepcopy(workflow_run_config))),
+            providers[1].create_run(RunConfigInput(**deepcopy(workflow_run_config))),
+            orchestrator.get_unfinished_workflows(),
+        )
+
+    assert isinstance(first, JSONResponse)
+    assert isinstance(second, JSONResponse)
+    run_ids = {json.loads(response.body)["id"] for response in (first, second)}
+    assert first.status_code == second.status_code == 201
+    assert set(state[RUNS_KEY]) == run_ids
+    assert len(run_ids) == 2
+    assert startup_runs == []
+    for store in provider_stores:
+        first_index_write = store.transaction.call_args_list[0].args[0][0]
+        assert first_index_write["etag"] == "-1"
+        assert first_index_write["options"]["concurrency"] == "first-write"
+    startup_store.assert_not_awaited()
 
 
 @patch.object(StateStore, "retrieve", side_effect=lambda _: [])
@@ -371,7 +447,7 @@ def test_workflow_resubmission(
         nonlocal submitted_runs
         submitted_runs.append(run)
 
-    def update_run_state_effect(run_ids: List[str], new_run: RunConfig):
+    def update_run_state_effect(run_ids: List[str], new_run: RunConfig, _: str):
         nonlocal first_run
         first_run = asdict(new_run)
 

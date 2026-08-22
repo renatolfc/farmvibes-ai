@@ -4,6 +4,7 @@
 
 # -*- coding: utf-8 -*-
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
@@ -43,6 +44,8 @@ class StateStoreProtocol(Protocol):
         parallelism: int = DEFAULT_BULK_PARALLELISM,
         traceparent: Optional[str] = None,
     ) -> List[Any]: ...
+
+    async def retrieve_bulk_existing(self, keys: List[str]) -> Dict[str, Any]: ...
 
     async def store(self, key: str, obj: Any, traceparent: Optional[str] = None) -> None: ...
 
@@ -119,6 +122,30 @@ class StateStore(StateStoreProtocol):
         if missing:
             raise KeyError(f"Failed to retrieve keys {missing} from state store.")
         return [state_by_key[key] for key in keys]
+
+    async def retrieve_bulk_existing(self, keys: List[str]) -> Dict[str, Any]:
+        if not keys:
+            return {}
+        try:
+            values = await self.retrieve_bulk(keys)
+            if len(values) == len(keys):
+                return {key: value for key, value in zip(keys, values) if value is not None}
+        except KeyError:
+            pass
+
+        async def retrieve_one(key: str) -> Tuple[str, Optional[Any]]:
+            try:
+                return key, await self.retrieve(key)
+            except KeyError:
+                return key, None
+
+        existing: Dict[str, Any] = {}
+        for start in range(0, len(keys), DEFAULT_BULK_PARALLELISM):
+            chunk = keys[start : start + DEFAULT_BULK_PARALLELISM]
+            for key, value in await asyncio.gather(*(retrieve_one(key) for key in chunk)):
+                if value is not None:
+                    existing[key] = value
+        return existing
 
     async def store(self, key: str, obj: Any, traceparent: Optional[str] = None) -> None:
         response = await self.vibe_dapr_client.post(

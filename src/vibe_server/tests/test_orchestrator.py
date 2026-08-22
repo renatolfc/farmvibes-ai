@@ -2,9 +2,10 @@
 # Licensed under the MIT License.
 
 from asyncio.queues import Queue
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
 from uuid import uuid4 as uuid
@@ -12,7 +13,7 @@ from uuid import uuid4 as uuid
 import pytest
 from cloudevents.sdk.event import v1
 
-from vibe_common.constants import STATUS_PUBSUB_TOPIC, WORKFLOW_REQUEST_PUBSUB_TOPIC
+from vibe_common.constants import RUNS_KEY, STATUS_PUBSUB_TOPIC, WORKFLOW_REQUEST_PUBSUB_TOPIC
 from vibe_common.dropdapr import TopicEventResponseStatus
 from vibe_common.messaging import (
     ErrorContent,
@@ -211,7 +212,47 @@ async def test_orchestrator_startup_sees_no_runs(retrieve: Mock, retrieve_bulk: 
     retrieve_bulk.return_value = []
     orchestrator = Orchestrator()
     assert await orchestrator.get_unfinished_workflows() == []
-    retrieve_bulk.assert_called_once_with([])
+    retrieve_bulk.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_orchestrator_startup_skips_run_deleted_after_index_snapshot(
+    run_config: Dict[str, Any],
+):
+    removed_id, remaining_id = str(uuid()), str(uuid())
+    removed = deepcopy(run_config)
+    removed["id"] = removed_id
+    remaining = deepcopy(run_config)
+    remaining["id"] = remaining_id
+    state = {removed_id: removed, remaining_id: remaining}
+
+    async def retrieve(key: str):
+        if key == RUNS_KEY:
+            return [removed_id, remaining_id]
+        if key not in state:
+            raise KeyError(key)
+        return deepcopy(state[key])
+
+    async def retrieve_bulk(keys: List[str]):
+        assert keys == [removed_id, remaining_id]
+        state.pop(removed_id)
+        raise KeyError(removed_id)
+
+    orchestrator = Orchestrator()
+    orchestrator.statestore.retrieve = AsyncMock(side_effect=retrieve)
+    orchestrator.statestore.retrieve_bulk = AsyncMock(side_effect=retrieve_bulk)
+    message = Mock()
+    with patch.object(
+        orchestrator, "run_config_to_workflow_message", return_value=message
+    ) as build:
+        with patch.object(
+            orchestrator, "handle_workflow_execution_message", new_callable=AsyncMock
+        ) as resume:
+            await orchestrator._resume_workflows()
+
+    build.assert_called_once()
+    assert str(build.call_args.args[0].id) == remaining_id
+    resume.assert_awaited_once_with(message)
 
 
 @patch("vibe_common.statestore.StateStore.retrieve")
@@ -261,14 +302,14 @@ async def test_orchestrator_startup_sees_unfinished_runs(
         nonlocal first
         if first:
             first = False
-            return run_config["id"]
+            return [run_config["id"]]
         return run_config
 
     _run_ops.return_value = None
     retrieve_sinks.return_value = None
     map_output.return_value = None
     retrieve.side_effect = retrieve_fun
-    retrieve_bulk.return_value = [run_config, run_config, run_config]
+    retrieve_bulk.return_value = [run_config]
     build_return_value = Workflow.build(
         get_fake_workflow_path("single_and_parallel"), fake_ops_dir, fake_workflows_dir
     )
@@ -276,7 +317,7 @@ async def test_orchestrator_startup_sees_unfinished_runs(
     with patch("vibe_server.workflow.workflow.Workflow.build", return_value=build_return_value):
         orchestrator = Orchestrator()
         await orchestrator._resume_workflows()
-        retrieve_bulk.assert_called_once_with(run_config["id"])
+        retrieve_bulk.assert_called_once_with([run_config["id"]])
         _run_ops.assert_called()
 
 

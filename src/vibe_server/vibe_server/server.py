@@ -48,7 +48,6 @@ from vibe_common.dapr import dapr_ready
 from vibe_common.messaging import WorkMessageBuilder, send
 from vibe_common.secret_provider import DaprSecretConfig
 from vibe_common.statestore import (
-    DEFAULT_BULK_PARALLELISM,
     StateStore,
     StateStoreConflictError,
     TransactionOperation,
@@ -118,6 +117,8 @@ RunList = Union[List[str], List[Dict[str, Any]], JSONResponse]
 WorkflowList = Union[List[str], Dict[str, Any], JSONResponse]
 CreateRunResponse = Union[Dict[str, Union[UUID, str]], JSONResponse]
 RUN_INDEX_UPDATE_RETRIES = 3
+# Redis accepts any ETag for a missing key, while its stored versions are positive.
+RUN_INDEX_CREATE_ETAG = "-1"
 
 
 class WorkflowReturnFormat(StrEnum):
@@ -393,10 +394,9 @@ class TerravibesProvider:
                         if retry_id not in run_ids:
                             run_ids.append(retry_id)
                     try:
-                        if runs_etag is None:
-                            await self.update_run_state(run_ids, new_run)
-                        else:
-                            await self.update_run_state(run_ids, new_run, runs_etag)
+                        await self.update_run_state(
+                            run_ids, new_run, runs_etag or RUN_INDEX_CREATE_ETAG
+                        )
                         break
                     except StateStoreConflictError:
                         if attempt + 1 == RUN_INDEX_UPDATE_RETRIES:
@@ -491,7 +491,7 @@ class TerravibesProvider:
 
     @add_trace
     async def update_run_state(
-        self, run_ids: List[str], new_run: RunConfig, runs_etag: Optional[str] = None
+        self, run_ids: List[str], new_run: RunConfig, runs_etag: str
     ):
         runs_operation = cast(
             TransactionOperation,
@@ -499,14 +499,13 @@ class TerravibesProvider:
                 "key": RUNS_KEY,
                 "operation": "upsert",
                 "value": run_ids,
+                "etag": runs_etag,
+                "options": {
+                    "concurrency": "first-write",
+                    "consistency": "strong",
+                },
             },
         )
-        if runs_etag is not None:
-            runs_operation["etag"] = runs_etag
-            runs_operation["options"] = {
-                "concurrency": "first-write",
-                "consistency": "strong",
-            }
         await self.state_store.transaction(
             [
                 runs_operation,
@@ -538,32 +537,8 @@ class TerravibesProvider:
 
     @add_trace
     async def get_bulk_runs_by_id(self, run_ids: Union[List[str], List[UUID]]) -> List[RunConfig]:
-        async def retrieve_existing(keys: List[str]) -> Dict[str, Any]:
-            if not keys:
-                return {}
-            try:
-                values = await self.state_store.retrieve_bulk(keys)
-                if len(values) == len(keys):
-                    return {key: value for key, value in zip(keys, values) if value is not None}
-            except KeyError:
-                pass
-
-            async def retrieve_one(key: str) -> Tuple[str, Optional[Any]]:
-                try:
-                    return key, await self.state_store.retrieve(key)
-                except KeyError:
-                    return key, None
-
-            existing: Dict[str, Any] = {}
-            for start in range(0, len(keys), DEFAULT_BULK_PARALLELISM):
-                chunk = keys[start : start + DEFAULT_BULK_PARALLELISM]
-                for key, value in await asyncio.gather(*(retrieve_one(key) for key in chunk)):
-                    if value is not None:
-                        existing[key] = value
-            return existing
-
         requested_ids = [str(run_id) for run_id in run_ids]
-        run_state = await retrieve_existing(requested_ids)
+        run_state = await self.state_store.retrieve_bulk_existing(requested_ids)
         ordered_run_data = [
             run_state[run_id] for run_id in requested_ids if isinstance(run_state.get(run_id), dict)
         ]
@@ -573,7 +548,7 @@ class TerravibesProvider:
             for task in run_data.get("tasks", [])
         ]
         task_keys = [f"{run_id}-{task}" for run_id, task in run_task_ids]
-        task_state = await retrieve_existing(task_keys)
+        task_state = await self.state_store.retrieve_bulk_existing(task_keys)
         for run_data in ordered_run_data:
             run_data.setdefault("task_details", {})
             run_id = str(run_data.get("id", ""))

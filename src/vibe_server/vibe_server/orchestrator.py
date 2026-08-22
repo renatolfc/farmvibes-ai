@@ -689,15 +689,17 @@ class Orchestrator:
         await asyncio.gather(server_task, resume_call)
 
     async def get_unfinished_workflows(self) -> List[RunConfig]:
-        keys = []
         try:
             keys = await self.statestore.retrieve(RUNS_KEY)
         except KeyError:
-            await self.statestore.store(RUNS_KEY, [])
+            return []
 
-        all_runs = cast(
-            List[RunConfig], [RunConfig(**r) for r in await self.statestore.retrieve_bulk(keys)]
-        )
+        run_state = await self.statestore.retrieve_bulk_existing(keys)
+        all_runs = [
+            RunConfig(**run_state[key])
+            for key in keys
+            if isinstance(run_state.get(key), dict)
+        ]
         return [r for r in all_runs if not RunStatus.finished(r.details.status)]
 
     def run_config_to_workflow_message(self, run: RunConfig) -> WorkflowExecutionMessage:
