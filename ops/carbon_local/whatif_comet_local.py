@@ -206,10 +206,9 @@ class SeasonalFieldConverter:
         scenario.attrib["Name"] = "Current"
         self._add_scenario(seasonal_fields=baseline_seasonal_fields, scenario=scenario)
 
-        if scenario_seasonal_fields:
-            scenario = ET.SubElement(cropland, "CropScenario")
-            scenario.attrib["Name"] = "scenario: " + datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            self._add_scenario(seasonal_fields=scenario_seasonal_fields, scenario=scenario)
+        scenario = ET.SubElement(cropland, "CropScenario")
+        scenario.attrib["Name"] = "scenario: " + datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        self._add_scenario(seasonal_fields=scenario_seasonal_fields, scenario=scenario)
 
         return ET.tostring(root, encoding="unicode")
 
@@ -242,14 +241,12 @@ class CallbackBuilder:
         )
 
         comet_response = self.comet_requester.run_comet_request(xml_str)
-        output_field = (scenario_seasonal_fields or baseline_seasonal_fields)[-1]
-
         obj_carbon = CarbonOffsetInfo(
             id=gen_guid(),
-            geometry=output_field.geometry,
+            geometry=scenario_seasonal_fields[-1].geometry,
             time_range=(
                 baseline_seasonal_fields[0].time_range[0],
-                output_field.time_range[1],
+                scenario_seasonal_fields[-1].time_range[1],
             ),
             assets=[],
             carbon=comet_response,

@@ -344,12 +344,6 @@ def test_comet_v25_request(
     )
     assert scenarios[0].find("CropYear/Crop/BioCharApplicationList") is not None
 
-    current_only = ET.fromstring(
-        converter.build_comet_request(baseline_information, [])
-    ).findall("Project/Cropland/CropScenario")
-    assert [scenario.attrib["Name"] for scenario in current_only] == ["Current"]
-
-
 @patch("vibe_lib.comet_farm.comet_server.requests.request")
 def test_submit_job_uses_api_key_without_logging_it(
     request: Mock, caplog: pytest.LogCaptureFixture

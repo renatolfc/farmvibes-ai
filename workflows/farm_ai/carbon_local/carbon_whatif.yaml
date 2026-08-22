@@ -26,9 +26,8 @@ description:
     To derive amount of carbon, it relies on seasonal information information provided for both baseline and
     scenario. The baseline represents historical information of farm practices used during each season that
     includes fertilizers, tillage, harvest and organic amendment. Minimum 2 years of baseline information required
-    to execute the workflow. The optional scenario represents future farm practices planned for each season and
-    includes fertilizers, tillage, harvest and organic amendment. Pass an empty list to receive the projected
-    baseline only. The requests received by workflow are forwarded to comet api.
+    to execute the workflow. The scenario represents future farm practices planned for each season and includes
+    fertilizers, tillage, harvest and organic amendment. The requests received by workflow are forwarded to comet api.
     To know more information of comet refer to https://gitlab.com/comet-api/api-docs/-/tree/master/.
     To understand the enumerations and information accepted by comet refer to
     https://gitlab.com/comet-api/api-docs/-/blob/master/COMET-Farm_API_File_Specification.xlsx
@@ -41,8 +40,8 @@ description:
       List of seasonal fields that holds the historical information of farm practices such as fertilizers,
       tillage, harvest and organic amendment.
     scenario_seasonal_fields:
-      Optional list of seasonal fields that holds future farm practices. Pass an empty list for a
-      projected-baseline-only request.
+      List of seasonal fields that holds future farm practices such as fertilizers, tillage, harvest and organic
+      amendment.
   sinks:
     carbon_output: Carbon sequestration received for scenario information provided as input.
   parameters:
