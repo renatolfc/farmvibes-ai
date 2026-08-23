@@ -1,0 +1,269 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+import base64
+import json
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any, Dict
+from unittest.mock import Mock
+
+import pytest
+
+import vibe_core.cli.remote as remote
+import vibe_core.cli.wrappers as wrappers
+from vibe_core.cli.osartifacts import OSArtifacts
+from vibe_core.cli.parsers import RemoteCliParser
+from vibe_core.cli.wrappers import KubectlWrapper
+
+
+def encoded_secret(token: str) -> Dict[str, Any]:
+    return {
+        "type": "Opaque",
+        "data": {"token": base64.b64encode(token.encode()).decode()},
+    }
+
+
+def configured_artifacts(tmp_path: Path) -> Mock:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.private_config_dir = tmp_path / "private"
+    artifacts.private_config_dir.mkdir()
+    artifacts.kubectl = "kubectl"
+    artifacts.config_file.side_effect = lambda name: str(tmp_path / name)
+    return artifacts
+
+
+def test_opaque_secret_upsert_uses_censored_private_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts = configured_artifacts(tmp_path)
+    invocation = {}
+
+    def capture(command: Any, **kwargs: Any) -> str:
+        path = Path(command[-1])
+        invocation.update(
+            command=command,
+            kwargs=kwargs,
+            mode=path.stat().st_mode & 0o777,
+            manifest=json.loads(path.read_text()),
+        )
+        return ""
+
+    monkeypatch.setattr(wrappers, "execute_cmd", capture)
+    KubectlWrapper(artifacts, "cluster").upsert_opaque_secret(
+        "farmvibes-api-auth", {"token": "never-log-this"}
+    )
+
+    assert invocation["mode"] == 0o600
+    assert invocation["manifest"] == {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "farmvibes-api-auth"},
+        "type": "Opaque",
+        "data": {
+            "token": base64.b64encode(b"never-log-this").decode(),
+        },
+    }
+    assert invocation["command"][:5] == [
+        "kubectl",
+        "--context",
+        "k3d-cluster",
+        "apply",
+        "-f",
+    ]
+    assert "never-log-this" not in " ".join(invocation["command"])
+    assert invocation["kwargs"]["censor_command"] is True
+    assert invocation["kwargs"]["censor_output"] is True
+    assert not list(artifacts.private_config_dir.iterdir())
+
+
+def test_token_create_recover_and_rotate(tmp_path: Path):
+    artifacts = configured_artifacts(tmp_path)
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.get_secret_or_none.return_value = None
+
+    assert remote.ensure_remote_api_token(artifacts, kubectl) is True
+    created = kubectl.upsert_opaque_secret.call_args.args[1]["token"]
+    assert len(base64.urlsafe_b64decode(created + "==")) == 48
+    assert (artifacts.private_config_dir / "remote_api_token").read_text() == created
+
+    kubectl.reset_mock()
+    kubectl.get_secret_or_none.return_value = encoded_secret("cluster-token")
+    assert remote.ensure_remote_api_token(artifacts, kubectl) is False
+    kubectl.upsert_opaque_secret.assert_not_called()
+    assert (
+        artifacts.private_config_dir / "remote_api_token"
+    ).read_text() == "cluster-token"
+
+    assert remote.ensure_remote_api_token(artifacts, kubectl, rotate=True) is True
+    rotated = kubectl.upsert_opaque_secret.call_args.args[1]["token"]
+    assert rotated not in {created, "cluster-token"}
+    assert (artifacts.private_config_dir / "remote_api_token").read_text() == rotated
+
+
+def test_token_file_is_atomically_replaced_with_private_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts = configured_artifacts(tmp_path)
+    path = artifacts.private_config_dir / "remote_api_token"
+    path.write_text("old")
+    replacements = []
+    replace = remote.os.replace
+
+    def capture(source: str, destination: Path):
+        assert path.read_text() == "old"
+        assert Path(source).stat().st_mode & 0o777 == 0o600
+        replacements.append((source, destination))
+        replace(source, destination)
+
+    monkeypatch.setattr(remote.os, "replace", capture)
+    remote.persist_remote_api_token(artifacts, "new")
+
+    assert len(replacements) == 1
+    assert path.read_text() == "new"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert list(artifacts.private_config_dir.iterdir()) == [path]
+
+
+def test_remote_status_recovers_token_from_cluster(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts = configured_artifacts(tmp_path)
+    artifacts.config_file.side_effect = lambda name: str(tmp_path / name)
+    az = Mock(cluster_name="cluster", resource_group="group")
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.get_secret_or_none.return_value = encoded_secret("recovered")
+    kubectl.url_from_ingress.return_value = "https://example.test"
+    monkeypatch.setattr(remote, "TerraformWrapper", Mock())
+    monkeypatch.setattr(remote, "_initialize_kubectl", Mock(return_value=kubectl))
+
+    assert remote.status(artifacts, az, "public") is True
+    assert (
+        artifacts.private_config_dir / "remote_api_token"
+    ).read_text() == "recovered"
+
+
+def test_remote_update_rotation_flag_is_update_only():
+    parser = RemoteCliParser("remote")
+    required = ["--region", "eastus", "--cert-email", "user@example.test"]
+
+    assert parser.parse(["update", *required]).rotate_api_token is False
+    assert (
+        parser.parse(["update", *required, "--rotate-api-token"]).rotate_api_token
+        is True
+    )
+    with pytest.raises(SystemExit):
+        parser.parse(["setup", *required, "--rotate-api-token"])
+
+
+def configured_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    token_changed: Any,
+):
+    artifacts = configured_artifacts(tmp_path)
+    az = Mock(
+        cluster_name="cluster",
+        resource_group="group",
+        os_artifacts=artifacts,
+    )
+    az.get_subscription_and_tenant_id.return_value = ("subscription", "tenant")
+    az.check_resource_providers.return_value = True
+    az.get_current_user_name.return_value = "admin"
+    az.cluster_exists.return_value = True
+    az.ensure_azurerm_backend.return_value = ("storage", "container", "key")
+
+    terraform = Mock()
+    terraform.get_current_core_count.return_value = (0, 0)
+    terraform.workspace.return_value = nullcontext()
+    terraform.ensure_infra.return_value = {
+        "kubernetes_config_context": {"value": "context"},
+        "public_ip_address": {"value": "ip"},
+        "public_ip_fqdn": {"value": "fqdn"},
+        "public_ip_dns": {"value": "dns"},
+        "keyvault_name": {"value": "vault"},
+        "application_id": {"value": "app"},
+        "storage_connection_key": {"value": "storage-key"},
+        "storage_account_name": {"value": "account"},
+        "userfile_container_name": {"value": "userfiles"},
+        "monitor_instrumentation_key": {"value": "monitor"},
+        "worker_node_pool_name": {"value": "workers"},
+    }
+    terraform.ensure_k8s_cluster.return_value = {
+        "shared_resource_pv_claim_name": {"value": "claim"},
+        "otel_service_name": {"value": "otel"},
+    }
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.cluster_name = "cluster"
+    kubectl.os_artifacts = artifacts
+    dapr = Mock()
+    dapr.needs_upgrade.return_value = False
+
+    monkeypatch.setattr(remote, "TerraformWrapper", Mock(return_value=terraform))
+    monkeypatch.setattr(remote, "_initialize_kubectl", Mock(return_value=kubectl))
+    monkeypatch.setattr(remote, "DaprWrapper", Mock(return_value=dapr))
+    monkeypatch.setattr(remote, "status", Mock(return_value=True))
+    token = Mock(side_effect=token_changed) if isinstance(token_changed, Exception) else Mock(
+        return_value=token_changed
+    )
+    monkeypatch.setattr(remote, "ensure_remote_api_token", token)
+    return artifacts, az, terraform, kubectl, token
+
+
+@pytest.mark.parametrize("changed,restarts", [(False, 0), (True, 1)])
+def test_update_provisions_before_services_and_selectively_restarts_rest_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    changed: bool,
+    restarts: int,
+):
+    artifacts, az, terraform, kubectl, provision = configured_update(
+        monkeypatch, tmp_path, changed
+    )
+    order = []
+    provision.side_effect = lambda *args, **kwargs: order.append("token") or changed
+    terraform.ensure_services.side_effect = lambda *args, **kwargs: order.append(
+        "services"
+    )
+
+    assert run_update(artifacts, az, rotate=changed) is True
+    assert order == ["token", "services"]
+    assert provision.call_args.kwargs["rotate"] is changed
+    assert kubectl.restart.call_count == restarts
+    if changed:
+        kubectl.restart.assert_called_once_with(
+            "deployment",
+            name="terravibes-rest-api",
+            cluster_name="cluster",
+        )
+
+
+def test_update_token_failure_is_fail_closed_before_services(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, az, terraform, kubectl, _ = configured_update(
+        monkeypatch, tmp_path, RuntimeError("secret unavailable")
+    )
+
+    assert run_update(artifacts, az) is False
+    terraform.ensure_services.assert_not_called()
+    kubectl.restart.assert_not_called()
+
+
+def run_update(artifacts: Mock, az: Mock, rotate: bool = False) -> bool:
+    return remote.setup_or_upgrade(
+        artifacts,
+        az,
+        "eastus",
+        "user@example.test",
+        "registry.example/farmvibes",
+        "user",
+        "password",
+        "farmvibes-ai-",
+        "latest",
+        "info",
+        True,
+        worker_replicas=3,
+        environment="public",
+        rotate_api_token=rotate,
+    )

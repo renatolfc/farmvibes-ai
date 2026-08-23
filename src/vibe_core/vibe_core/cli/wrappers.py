@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import base64
 import hashlib
 import json
 import os
@@ -1509,6 +1510,50 @@ class KubectlWrapper:
                 censor_output=True,
                 subprocess_log_level="debug",
             )
+
+    def upsert_opaque_secret(self, name: str, data: Dict[str, str]) -> None:
+        manifest = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": name},
+            "type": "Opaque",
+            "data": {
+                key: base64.b64encode(value.encode()).decode()
+                for key, value in data.items()
+            },
+        }
+        descriptor, manifest_path = tempfile.mkstemp(
+            dir=self.os_artifacts.private_config_dir,
+            prefix=".secret-",
+            suffix=".json",
+        )
+        try:
+            os.chmod(manifest_path, 0o600)
+            manifest_file = os.fdopen(descriptor, "w")
+            descriptor = -1
+            with manifest_file:
+                json.dump(manifest, manifest_file)
+                manifest_file.flush()
+                os.fsync(manifest_file.fileno())
+            execute_cmd(
+                [
+                    self.os_artifacts.kubectl,
+                    "--context",
+                    self.context_name,
+                    "apply",
+                    "-f",
+                    manifest_path,
+                ],
+                error_string=f"Unable to update secret {name}",
+                censor_command=True,
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if os.path.exists(manifest_path):
+                os.remove(manifest_path)
 
     def add_secret(self, secret_name: str, secret_value: str):
         cmd = [

@@ -2,8 +2,13 @@
 # Licensed under the MIT License.
 
 import argparse
+import base64
+import binascii
 import os
-from typing import Optional
+import secrets
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from vibe_core.cli import helper
 from vibe_core.cli.constants import AZURE_CR_DOMAIN, MAX_WORKER_NODES, REMOTE_SERVICE_URL_PATH_FILE
@@ -21,6 +26,10 @@ DESTROY_WARNING = (
     "This action cannot be undone.\n\n"
     "Do you wish to proceed? (Answering 'y' will wipe the resource group)"
 )
+REMOTE_API_AUTH_SECRET = "farmvibes-api-auth"
+REMOTE_API_AUTH_TOKEN_KEY = "token"
+REMOTE_API_TOKEN_FILE = "remote_api_token"
+REST_API_DEPLOYMENT = "terravibes-rest-api"
 
 
 def _initialize_kubectl(
@@ -33,6 +42,70 @@ def _initialize_kubectl(
     return KubectlWrapper(
         az.os_artifacts, cluster_name=az.cluster_name, config_context=config_context
     )
+
+
+def remote_api_token_from_secret(secret: Dict[str, Any]) -> str:
+    data = secret.get("data")
+    encoded = data.get(REMOTE_API_AUTH_TOKEN_KEY) if isinstance(data, dict) else None
+    if not isinstance(encoded, str):
+        raise ValueError("Remote API token Secret is missing its token")
+    try:
+        token = base64.b64decode(encoded, validate=True).decode()
+    except (binascii.Error, UnicodeDecodeError):
+        raise ValueError("Remote API token Secret contains an invalid token") from None
+    if not token:
+        raise ValueError("Remote API token Secret contains an empty token")
+    return token
+
+
+def persist_remote_api_token(os_artifacts: OSArtifacts, token: str) -> None:
+    path = Path(os_artifacts.private_config_dir) / REMOTE_API_TOKEN_FILE
+    descriptor, temporary_path = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}."
+    )
+    try:
+        os.chmod(temporary_path, 0o600)
+        output = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor = -1
+        with output:
+            output.write(token)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+        os.chmod(path, 0o600)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+
+
+def ensure_remote_api_token(
+    os_artifacts: OSArtifacts,
+    kubectl: KubectlWrapper,
+    rotate: bool = False,
+) -> bool:
+    existing_secret = kubectl.get_secret_or_none(REMOTE_API_AUTH_SECRET)
+    if existing_secret is None or rotate:
+        token = secrets.token_urlsafe(48)
+        kubectl.upsert_opaque_secret(
+            REMOTE_API_AUTH_SECRET, {REMOTE_API_AUTH_TOKEN_KEY: token}
+        )
+        changed = True
+    else:
+        token = remote_api_token_from_secret(existing_secret)
+        changed = False
+    persist_remote_api_token(os_artifacts, token)
+    return changed
+
+
+def recover_remote_api_token(
+    os_artifacts: OSArtifacts, kubectl: KubectlWrapper
+) -> None:
+    secret = kubectl.get_secret_or_none(REMOTE_API_AUTH_SECRET)
+    if secret is None:
+        raise ValueError("Remote API token Secret does not exist; run remote update")
+    persist_remote_api_token(os_artifacts, remote_api_token_from_secret(secret))
 
 
 def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> bool:
@@ -50,6 +123,15 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
     terraform = TerraformWrapper(os_artifacts, az, environment=environment)
     kubectl = _initialize_kubectl(az, terraform)
     if not kubectl:
+        return False
+    try:
+        recover_remote_api_token(os_artifacts, kubectl)
+    except (OSError, ValueError):
+        log(
+            "Couldn't recover the remote API token. Run `farmvibes-ai remote update` "
+            "with an authorized cluster account.",
+            level="error",
+        )
         return False
     log(f"Getting URL from ingress for cluster {az.cluster_name}...")
     url = kubectl.url_from_ingress(az.cluster_name)
@@ -109,6 +191,7 @@ def setup_or_upgrade(
     worker_replicas: int = 0,
     environment: str = "",
     current_user_name: str = "",
+    rotate_api_token: bool = False,
 ) -> bool:
     assert environment, "Cloud environment name must be provided"
     if not worker_replicas:
@@ -260,6 +343,9 @@ def setup_or_upgrade(
                 enable_telemetry,
                 cleanup_state=True,
             )
+            token_changed = ensure_remote_api_token(
+                os_artifacts, kubectl, rotate=rotate_api_token
+            )
             terraform.ensure_services(
                 az.cluster_name,
                 az.resource_group,
@@ -281,6 +367,12 @@ def setup_or_upgrade(
                 log("dapr upgraded, restarting services")
                 with kubectl.context(kubectl.cluster_name):
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
+            elif is_update and token_changed:
+                kubectl.restart(
+                    "deployment",
+                    name=REST_API_DEPLOYMENT,
+                    cluster_name=az.cluster_name,
+                )
 
     except Exception as e:
         log(f"{e.__class__.__name__}: {e}")
@@ -440,6 +532,7 @@ def dispatch(args: argparse.Namespace):
             worker_replicas=args.worker_replicas,
             environment=args.environment,
             current_user_name=args.cluster_admin_name,
+            rotate_api_token=getattr(args, "rotate_api_token", False),
         )
     elif args.action in {"destroy", "rm", "del", "remove"}:
         ret = destroy(os_artifacts, az, args.resource_group, confirm=True)
