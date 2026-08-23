@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 terraform {
-  required_version = ">=0.12"
+  required_version = ">=1.0"
 
   required_providers {
     kubernetes = {
@@ -11,7 +11,7 @@ terraform {
     }
     helm = {
       source  = "hashicorp/helm"
-      version = ">=2.7.1, <3.0.0"
+      version = "~>3.2"
     }
     kubectl = {
       source  = "gavinbunney/kubectl"
@@ -43,7 +43,7 @@ provider "kubernetes" {
 }
 
 provider "helm" {
-  kubernetes {
+  kubernetes = {
     config_path    = var.kubernetes_config_path
     config_context = var.kubernetes_config_context
   }
