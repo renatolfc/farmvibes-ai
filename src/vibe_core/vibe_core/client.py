@@ -46,6 +46,7 @@ from vibe_core.datamodel import (
     WorkflowRun,
 )
 from vibe_core.monitor import VibeWorkflowDocumenter, VibeWorkflowRunMonitor
+from vibe_core.security import BEARER_SCHEME, REMOTE_API_TOKEN_FILENAME
 from vibe_core.utils import ensure_list, format_double_escaped
 
 FALLBACK_SERVICE_URL = "http://127.0.0.1:31108/"
@@ -74,6 +75,14 @@ FARMVIBES_AI_REMOTE_SERVICE_URL_PATH = os.path.join(
 :meta hide-value:
 """
 
+FARMVIBES_AI_REMOTE_API_TOKEN_PATH = os.path.join(
+    XDG_CONFIG_HOME, "farmvibes-ai", REMOTE_API_TOKEN_FILENAME
+)
+"""Path to the remote API token file.
+
+:meta hide-value:
+"""
+
 DISK_FREE_THRESHOLD_BYTES = 50 * 1024 * 1024 * 1024  # 50 GiB
 """Threshold for disk space in bytes."""
 
@@ -97,9 +106,9 @@ class ClusterType(StrEnum):
             A :class:`FarmvibesAiClient` object based on the cluster type.
 
         """
-        return FarmvibesAiClient(
-            get_remote_service_url() if self.value == self.remote else get_local_service_url()
-        )
+        if self.value == self.remote:
+            return FarmvibesAiClient(get_remote_service_url(), get_remote_api_token())
+        return FarmvibesAiClient(get_local_service_url())
 
 
 class Client(ABC):
@@ -147,6 +156,7 @@ class FarmvibesAiClient(Client):
 
     Args:
         baseurl: The base URL of the FarmVibes.AI service.
+        token: An optional bearer token.
 
     """
 
@@ -156,11 +166,13 @@ class FarmvibesAiClient(Client):
     }
     """The default headers to use for requests to the FarmVibes.AI service."""
 
-    def __init__(self, baseurl: str):
+    def __init__(self, baseurl: str, token: Optional[str] = None):
         """Instantiate a new FarmVibes.AI client."""
         self.baseurl = baseurl
         self.session = requests.Session()
         self.session.headers.update(self.default_headers)
+        if token:
+            self.session.headers["Authorization"] = f"{BEARER_SCHEME} {token}"
 
     def _request(self, method: str, endpoint: str, *args: Any, **kwargs: Any):
         """Send a request to the FarmVibes.AI service and handle errors.
@@ -184,6 +196,11 @@ class FarmvibesAiClient(Client):
             response.raise_for_status()
         except HTTPError as e:
             error_message = r.get("message", "") if isinstance(r, dict) else r
+            if response.status_code == 401:
+                error_message = (
+                    "Remote API authentication failed. Run `farmvibes-ai remote update` "
+                    "or `farmvibes-ai remote status` to refresh remote access."
+                )
             msg = f"{e}. {error_message}"
             raise HTTPError(msg, response=e.response)
         return cast(Any, r)
@@ -1067,11 +1084,22 @@ def get_remote_service_url() -> str:
         return fp.read().strip()
 
 
-def get_vibe_client(url: str) -> FarmvibesAiClient:
+def get_remote_api_token() -> Optional[str]:
+    """Get the remote API token if one has been configured."""
+
+    try:
+        with open(FARMVIBES_AI_REMOTE_API_TOKEN_PATH, "r") as fp:
+            return fp.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def get_vibe_client(url: str, token: Optional[str] = None) -> FarmvibesAiClient:
     """Get a vibe client given an API base URL.
 
     Args:
         url: The URL.
+        token: An optional bearer token.
 
     Returns:
         The vibe client.
@@ -1079,7 +1107,7 @@ def get_vibe_client(url: str) -> FarmvibesAiClient:
     """
     if not url:
         raise ValueError("URL for vibe client must be provided")
-    return FarmvibesAiClient(url)
+    return FarmvibesAiClient(url, token)
 
 
 def get_default_vibe_client(type: Union[str, ClusterType] = "") -> FarmvibesAiClient:
@@ -1098,9 +1126,10 @@ def get_default_vibe_client(type: Union[str, ClusterType] = "") -> FarmvibesAiCl
     """
     if not type:
         try:
-            return FarmvibesAiClient(get_remote_service_url())
-        except Exception:
+            remote_url = get_remote_service_url()
+        except FileNotFoundError:
             return FarmvibesAiClient(get_local_service_url())
+        return FarmvibesAiClient(remote_url, get_remote_api_token())
 
     if isinstance(type, str):
         type = ClusterType(type)

@@ -20,6 +20,7 @@ from vibe_common.statestore import DEFAULT_BULK_PARALLELISM, StateStore, StateSt
 from vibe_core.data.core_types import InnerIOType
 from vibe_core.data.utils import StacConverter, deserialize_stac
 from vibe_core.datamodel import RunConfig, RunConfigInput, RunDetails, RunStatus
+from vibe_core.security import API_TOKEN_ENV_VAR, REDACTED_VALUE
 from vibe_server.href_handler import BlobHrefHandler, LocalHrefHandler
 from vibe_server.orchestrator import Orchestrator
 from vibe_server.server import TerravibesAPI, TerravibesProvider
@@ -81,6 +82,71 @@ def test_generate_api_documentation_page(request_client: requests.Session):
     assert response.status_code == 200
     openapi_json = request_client.get("/v0/openapi.json")
     assert openapi_json.status_code == 200
+
+
+@pytest.fixture
+def authenticated_api(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv(API_TOKEN_ENV_VAR, "correct-token")
+    app = TerravibesAPI(LocalHrefHandler("/tmp"))
+    return TestClient(app.versioned_wrapper)
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/v0/system-metrics"),
+        ("GET", "/v0/workflows"),
+        ("GET", "/v0/workflows/helloworld"),
+        ("GET", f"/v0/runs/{uuid()}"),
+        ("GET", "/v0/runs"),
+        ("POST", f"/v0/runs/{uuid()}/cancel"),
+        ("DELETE", f"/v0/runs/{uuid()}"),
+        ("POST", f"/v0/runs/{uuid()}/resubmit"),
+        ("POST", "/v0/runs"),
+    ],
+)
+def test_api_token_protects_all_versioned_routes(
+    authenticated_api: TestClient, method: str, path: str
+):
+    response = authenticated_api.request(method, path)
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Authorization": "Basic wrong"},
+        {"Authorization": "Bearer"},
+        {"Authorization": "Bearer wrong"},
+        {"X-Forwarded-Authorization": "Bearer correct-token"},
+        {"Proxy-Authorization": "Bearer correct-token"},
+        {"X-API-Key": "correct-token"},
+    ],
+)
+def test_api_token_rejects_malformed_wrong_and_proxy_credentials(
+    authenticated_api: TestClient, headers: Dict[str, str]
+):
+    response = authenticated_api.get("/v0/workflows", headers=headers)
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_api_token_allows_bearer_and_leaves_health_and_docs_public(
+    authenticated_api: TestClient,
+):
+    assert authenticated_api.get(
+        "/v0/workflows", headers={"Authorization": "Bearer correct-token"}
+    ).status_code == 200
+    for path in ("/v0/", "/v0/docs", "/v0/openapi.json"):
+        assert authenticated_api.get(path).status_code == 200
+
+    openapi = authenticated_api.get("/v0/openapi.json").json()
+    assert openapi["components"]["securitySchemes"]["Bearer"]["scheme"] == "bearer"
+    assert openapi["paths"]["/workflows"]["get"]["security"] == [{"Bearer": []}]
+    assert "security" not in openapi["paths"]["/"]["get"]
 
 
 @pytest.mark.parametrize("params", [None, {"param1": "new_param"}])
@@ -570,6 +636,49 @@ def test_summarize_runs(
             for field in fields:
                 if "doesnt" not in field:
                     assert field in summary[0]
+
+
+@pytest.mark.anyio
+async def test_run_parameter_responses_are_redacted_without_changing_state_or_resubmit():
+    raw_parameters = {
+        "visible": "plain",
+        "Password": "hidden",
+        "nested": {"api_key": "also-hidden"},
+    }
+    run = RunConfig(
+        name="sensitive",
+        workflow="helloworld",
+        parameters=deepcopy(raw_parameters),
+        user_input={},
+        id=uuid(),
+        details=RunDetails(),
+        task_details={},
+        spatio_temporal_json=None,
+    )
+    provider = TerravibesProvider(LocalHrefHandler("/tmp"))
+    provider.get_bulk_runs_by_id = AsyncMock(return_value=[run])  # type: ignore
+
+    summary = provider.summarize_runs(
+        [run], ["parameters", "parameters.Password", "parameters.nested.api_key"]
+    )[0]
+    description = await provider.describe_run(run.id)
+
+    assert summary["parameters"]["visible"] == "plain"
+    assert summary["parameters"]["Password"] == REDACTED_VALUE
+    assert summary["parameters"]["nested"]["api_key"] == REDACTED_VALUE
+    assert summary["parameters.Password"] == REDACTED_VALUE
+    assert summary["parameters.nested.api_key"] == REDACTED_VALUE
+    assert description["parameters"] == summary["parameters"]
+    assert run.parameters == raw_parameters
+
+    stored = asdict(run)
+    provider.state_store.retrieve = AsyncMock(return_value=stored)
+    provider.create_run = AsyncMock(return_value={"id": uuid()})  # type: ignore
+    await provider.resubmit_run(run.id)
+    resubmitted = provider.create_run.call_args.args[0]
+
+    assert resubmitted.parameters == raw_parameters
+    assert stored["parameters"] == raw_parameters
 
 
 @pytest.mark.parametrize("blob_df", [(True, type(None)), (False, int)])

@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import asyncio
+import hmac
 import logging
 import os
 from argparse import ArgumentParser, Namespace
@@ -28,9 +29,10 @@ import requests
 import uvicorn
 import yaml
 from dapr.conf import settings
-from fastapi import Body, FastAPI, Path, Query, status
+from fastapi import Body, FastAPI, HTTPException, Path, Query, Security, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_versioning import VersionedFastAPI, version
 from hydra_zen import instantiate
 from opentelemetry import trace
@@ -70,6 +72,7 @@ from vibe_core.datamodel import (
     SpatioTemporalJson,
 )
 from vibe_core.logconfig import LOG_BACKUP_COUNT, MAX_LOG_FILE_BYTES, configure_logging
+from vibe_core.security import API_TOKEN_ENV_VAR, BEARER_SCHEME, redact_sensitive
 
 from .href_handler import BlobHrefHandler, HrefHandler, LocalHrefHandler
 from .workflow import get_workflow_path, workflow_from_input
@@ -117,6 +120,28 @@ RunList = Union[List[str], List[Dict[str, Any]], JSONResponse]
 WorkflowList = Union[List[str], Dict[str, Any], JSONResponse]
 CreateRunResponse = Union[Dict[str, Union[UUID, str]], JSONResponse]
 RUN_INDEX_UPDATE_RETRIES = 3
+bearer_auth = HTTPBearer(auto_error=False, scheme_name=BEARER_SCHEME)
+
+
+def require_api_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_auth),
+) -> None:
+    """Require the configured API token when remote authentication is enabled."""
+
+    expected_token = os.getenv(API_TOKEN_ENV_VAR)
+    if not expected_token:
+        return
+    if (
+        credentials is not None
+        and credentials.scheme.casefold() == BEARER_SCHEME.casefold()
+        and hmac.compare_digest(credentials.credentials, expected_token)
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing bearer token",
+        headers={"WWW-Authenticate": BEARER_SCHEME},
+    )
 
 
 class WorkflowReturnFormat(StrEnum):
@@ -143,17 +168,19 @@ class TerravibesProvider:
         For example, to extract the "status" member from "details", use "details.status".
         """
 
-        summarized_runs = [{k: v for k, v in asdict(e).items() if k in fields} for e in runs]
+        sources = [asdict(run) for run in runs]
+        for source in sources:
+            source["parameters"] = redact_sensitive(source["parameters"])
+        summarized_runs = [{k: v for k, v in source.items() if k in fields} for source in sources]
         for field in fields:
             if "." not in field:
                 continue
-            for i, src in enumerate([asdict(r) for r in runs]):
+            for i, src in enumerate(sources):
                 prefixes, suffix = field.rsplit(".", maxsplit=1)
                 obj = src
                 for prefix in prefixes.split("."):
                     try:
                         obj = obj[prefix]
-                        summarized_runs[i].update({field: obj[suffix]})
                     except TypeError as e:
                         # We are trying to get a subfield from a field that
                         # didn't exist in the first place. `obj` is None, so we
@@ -161,6 +188,7 @@ class TerravibesProvider:
                         raise KeyError(
                             f"Workflow run with id {runs[i].id} does not have field {field}"
                         ) from e
+                summarized_runs[i].update({field: obj[suffix]})
         return summarized_runs
 
     @add_trace
@@ -286,7 +314,9 @@ class TerravibesProvider:
         try:
             run = (await self.get_bulk_runs_by_id([run_id]))[0]
             run_config_user = RunConfigUser.from_runconfig(run)
-            return jsonable_encoder(self.href_handler.handle(run_config_user))
+            response = jsonable_encoder(self.href_handler.handle(run_config_user))
+            response["parameters"] = redact_sensitive(response["parameters"])
+            return response
         except (KeyError, IndexError):
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -693,6 +723,7 @@ class TerravibesAPI(FastAPI):
                 ),
             },
         ]
+        protected = [Security(require_api_token)]
 
         @self.get("/")
         @version(0)
@@ -700,19 +731,21 @@ class TerravibesAPI(FastAPI):
             """Root endpoint."""
             return await self.terravibes.root()
 
-        @self.get("/system-metrics")
+        @self.get("/system-metrics", dependencies=protected)
         @version(0)
         async def terravibes_metrics() -> MetricsDict:
             """Get system metrics, including CPU usage, memory usage, and storage disk space."""
             return self.terravibes.system_metrics()
 
-        @self.get("/workflows", tags=["workflows"], response_model=None)
+        @self.get(
+            "/workflows", tags=["workflows"], response_model=None, dependencies=protected
+        )
         @version(0)
         async def terravibes_list_workflows() -> WorkflowList:
             """List all workflows available in FarmVibes.AI."""
             return await self.terravibes.list_workflows()
 
-        @self.get("/workflows/{workflow:path}", tags=["workflows"])
+        @self.get("/workflows/{workflow:path}", tags=["workflows"], dependencies=protected)
         @version(0)
         async def terravibes_describe_workflow(
             workflow: str = Path(
@@ -727,7 +760,7 @@ class TerravibesAPI(FastAPI):
             """Get a workflow by name, either as JSON description, or YAML graph implementation."""
             return await self.terravibes.list_workflows(workflow, return_format)
 
-        @self.get("/runs", tags=["runs"], response_model=None)
+        @self.get("/runs", tags=["runs"], response_model=None, dependencies=protected)
         @version(0)
         async def terravibes_list_runs(
             ids: Optional[List[UUID]] = Query(
@@ -749,7 +782,7 @@ class TerravibesAPI(FastAPI):
             """List all the workflow runs currently in the system."""
             return await self.terravibes.list_runs(ids, page, items, fields)
 
-        @self.get("/runs/{run_id}", tags=["runs"])
+        @self.get("/runs/{run_id}", tags=["runs"], dependencies=protected)
         @version(0)
         async def terravibes_describe_run(
             run_id: UUID = Path(
@@ -761,7 +794,7 @@ class TerravibesAPI(FastAPI):
             """Get information of a specific run."""
             return await self.terravibes.describe_run(run_id)
 
-        @self.post("/runs/{run_id}/cancel", tags=["runs"])
+        @self.post("/runs/{run_id}/cancel", tags=["runs"], dependencies=protected)
         @version(0)
         async def terravibes_cancel_run(
             run_id: UUID = Path(
@@ -773,7 +806,7 @@ class TerravibesAPI(FastAPI):
             """Cancel a workflow run."""
             return await self.terravibes.cancel_run(run_id)
 
-        @self.delete("/runs/{run_id}", tags=["runs"])
+        @self.delete("/runs/{run_id}", tags=["runs"], dependencies=protected)
         @version(0)
         async def terravibes_delete_run(
             run_id: UUID = Path(
@@ -789,7 +822,12 @@ class TerravibesAPI(FastAPI):
             """
             return await self.terravibes.delete_run(run_id)
 
-        @self.post("/runs/{run_id}/resubmit", tags=["runs"], response_model=None)
+        @self.post(
+            "/runs/{run_id}/resubmit",
+            tags=["runs"],
+            response_model=None,
+            dependencies=protected,
+        )
         @version(0)
         async def terravibes_resubmit_run(
             run_id: UUID = Path(
@@ -801,7 +839,12 @@ class TerravibesAPI(FastAPI):
             """Resubmit a workflow run."""
             return await self.terravibes.resubmit_run(run_id)
 
-        @self.post("/runs", tags=["workflows", "runs"], response_model=None)
+        @self.post(
+            "/runs",
+            tags=["workflows", "runs"],
+            response_model=None,
+            dependencies=protected,
+        )
         @version(0)
         async def terravibes_create_run(
             runConfig: RunConfigInput = Body(
