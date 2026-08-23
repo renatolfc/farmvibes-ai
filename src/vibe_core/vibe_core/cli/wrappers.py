@@ -1174,20 +1174,19 @@ class AzureCliWrapper:
             self.os_artifacts.az,
             "aks",
             "get-credentials",
+            "--admin",
             "--name",
             self.cluster_name,
             "--resource-group",
             self.resource_group,
+            "--file",
+            self.os_artifacts.config_file("kubeconfig"),
             "--overwrite-existing",
         ]
 
         error = "Couldn't get kubernetes credentials. Do you have access to the cluster?"
         execute_cmd(cmd, True, False, error, subprocess_log_level="debug")
-
-        # Now we have to use kubelogin to get/convert the credentials
-        cmd = [self.os_artifacts.kubelogin, "convert-kubeconfig", "-l", "azurecli"]
-        error = "Couldn't convert kubernetes credentials using kubelogin. Sorry."
-        execute_cmd(cmd, True, False, error_string=error, subprocess_log_level="debug")
+        os.chmod(self.os_artifacts.config_file("kubeconfig"), 0o600)
 
     def ensure_azurerm_backend(
         self,

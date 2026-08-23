@@ -70,7 +70,8 @@ resource "azurerm_kubernetes_cluster_node_pool" "kubernetes-worker" {
 }
 
 resource "local_file" "kubeconfig" {
-  filename   = "${var.kubeconfig_location}/kubeconfig"
-  content    = azurerm_kubernetes_cluster.kubernetes.kube_admin_config_raw
-  depends_on = [azurerm_kubernetes_cluster.kubernetes]
+  filename        = "${var.kubeconfig_location}/kubeconfig"
+  content         = azurerm_kubernetes_cluster.kubernetes.kube_admin_config_raw
+  file_permission = "0600"
+  depends_on      = [azurerm_kubernetes_cluster.kubernetes]
 }
