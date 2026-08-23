@@ -3,6 +3,7 @@
 
 import base64
 import json
+import os
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict
@@ -94,6 +95,25 @@ def test_token_create_and_recover(tmp_path: Path):
     assert (
         artifacts.private_config_dir / "remote_api_token"
     ).read_text() == "cluster-token"
+
+
+def test_remote_kubectl_uses_managed_kubeconfig(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts = configured_artifacts(tmp_path)
+    az = Mock(
+        os_artifacts=artifacts,
+        cluster_name="cluster",
+        resource_group="group",
+    )
+    terraform = Mock()
+    terraform.get_kubernetes_config_context.return_value = "cluster-context"
+
+    kubectl = remote._initialize_kubectl(az, terraform)
+
+    assert kubectl is not None
+    assert kubectl.config_context == "cluster-context"
+    assert os.environ["KUBECONFIG"] == str(tmp_path / "kubeconfig")
 
 def test_token_file_is_atomically_replaced_with_private_permissions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

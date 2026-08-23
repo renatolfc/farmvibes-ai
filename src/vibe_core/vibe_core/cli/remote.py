@@ -45,6 +45,7 @@ def _initialize_kubectl(
     if not config_context:
         log("Couldn't get Kubernetes config context", level="error")
         return None
+    os.environ["KUBECONFIG"] = az.os_artifacts.config_file("kubeconfig")
     return KubectlWrapper(
         az.os_artifacts, cluster_name=az.cluster_name, config_context=config_context
     )
