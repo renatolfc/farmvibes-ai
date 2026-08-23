@@ -165,9 +165,7 @@ resource "kubernetes_ingress_v1" "restapi" {
     name      = "terravibes-rest-api-ingress"
     namespace = var.namespace
     annotations = {
-      "nginx.ingress.kubernetes.io/use-regex"      = "true"
-      "nginx.ingress.kubernetes.io/ssl-redirect"   = var.local_deployment ? "false" : "true"
-      "nginx.ingress.kubernetes.io/rewrite-target" = "/$1"
+      "nginx.ingress.kubernetes.io/ssl-redirect" = var.local_deployment ? "false" : "true"
     }
   }
   spec {

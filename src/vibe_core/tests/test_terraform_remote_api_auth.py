@@ -15,6 +15,8 @@ def test_remote_api_auth_kubernetes_contract():
 
     assert '"LoadBalancer"' not in terraform
     assert 'type = "ClusterIP"' in terraform
+    assert "nginx.ingress.kubernetes.io/rewrite-target" not in terraform
+    assert "nginx.ingress.kubernetes.io/use-regex" not in terraform
     assert (
         'dynamic "env" {\n'
         "            for_each = var.local_deployment ? [] : [1]\n"
