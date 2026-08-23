@@ -66,4 +66,5 @@ def test_remote_helm_provider_uses_v3_syntax():
     assert "kubernetes = {" in providers
     assert "set {" not in releases
     assert releases.count("set = [") == 3
+    assert 'version    = "2.6.4"' in (module / "init.tf").read_text()
     assert 'provider "helm"' not in services

@@ -80,7 +80,7 @@ resource "helm_release" "nginx-ingress" {
   chart      = "nginx-ingress"
   namespace  = "ingress-basic"
   timeout    = 600
-  version    = "0.16.0"
+  version    = "2.6.4"
 
   set = [
     {
