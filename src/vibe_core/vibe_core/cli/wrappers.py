@@ -1047,6 +1047,8 @@ class AzureCliWrapper:
         error = "Couldn't get storage account keys. Do you have access to the resource group?"
         results = execute_cmd(cmd, True, False, error, censor_output=True)
         keys = json.loads(results)
+        if isinstance(keys, dict):
+            keys = keys["keys"]
         key = keys[0]["value"]
         return key
 
