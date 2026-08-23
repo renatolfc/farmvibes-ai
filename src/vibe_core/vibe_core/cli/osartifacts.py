@@ -103,7 +103,7 @@ class OSArtifacts:
             "https://kubernetes.io/docs/tasks/tools/install-kubectl/",
             InstallType.ALL,
             version_argument="version --client --output=yaml",
-            minimum_version="1.27.0",
+            minimum_version="1.35.0",
             version_regex=rf"gitVersion:\s+{MAJOR_MINOR_PATCH_REGEX}",
         ),
         "kubelogin": Dependency(
@@ -654,8 +654,8 @@ class TerraformInstaller(PrivateCliToolInstaller):
 
 
 class KubectlInstaller(PrivateCliToolInstaller):
-    KUBECTL_RELEASE_URL = "https://storage.googleapis.com/kubernetes-release/release/stable.txt"
-    KUBECTL_BASE_URL = "https://storage.googleapis.com/kubernetes-release/release"
+    KUBECTL_RELEASE_URL = "https://dl.k8s.io/release/stable.txt"
+    KUBECTL_BASE_URL = "https://dl.k8s.io/release"
 
     @property
     def latest_release(self) -> str:
