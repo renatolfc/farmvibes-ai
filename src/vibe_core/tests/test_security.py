@@ -26,6 +26,8 @@ def test_redact_sensitive_recurses_case_insensitively_without_mutating_input():
     original = {
         "plain": "visible",
         "Secret": "secret",
+        "pc_key": "planetary-computer-key",
+        "app_key": "ambient-weather-key",
         "nested": [
             {
                 "PASSWORD": "password",
@@ -51,5 +53,7 @@ def test_redact_sensitive_recurses_case_insensitively_without_mutating_input():
     assert redacted is not original
     assert redacted["plain"] == "visible"
     assert redacted["Secret"] == REDACTED_VALUE
+    assert redacted["pc_key"] == REDACTED_VALUE
+    assert redacted["app_key"] == REDACTED_VALUE
     assert set(redacted["nested"][0].values()) == {REDACTED_VALUE}
     assert set(redacted["nested"][1][0].values()) == {REDACTED_VALUE}

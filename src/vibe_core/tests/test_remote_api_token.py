@@ -196,6 +196,7 @@ def configured_update(
     kubectl = Mock(spec=KubectlWrapper)
     kubectl.cluster_name = "cluster"
     kubectl.os_artifacts = artifacts
+    kubectl.context.return_value = nullcontext()
     dapr = Mock()
     dapr.needs_upgrade.return_value = False
 
@@ -231,11 +232,8 @@ def test_update_provisions_before_services_and_selectively_restarts_rest_api(
     assert provision.call_args.kwargs["rotate"] is changed
     assert kubectl.restart.call_count == restarts
     if changed:
-        kubectl.restart.assert_called_once_with(
-            "deployment",
-            name="terravibes-rest-api",
-            cluster_name="cluster",
-        )
+        kubectl.context.assert_called_once_with("cluster")
+        kubectl.restart.assert_called_once_with("deployment", name="terravibes-rest-api")
 
 
 def test_update_token_failure_is_fail_closed_before_services(

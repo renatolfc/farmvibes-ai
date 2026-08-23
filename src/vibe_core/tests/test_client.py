@@ -9,11 +9,20 @@ import requests
 
 import vibe_core.client as client_module
 from vibe_core.client import (
+    FARMVIBES_AI_REMOTE_API_TOKEN_PATH,
     ClusterType,
     FarmvibesAiClient,
     get_default_vibe_client,
     get_vibe_client,
 )
+
+
+def test_remote_token_uses_private_config_directory():
+    assert Path(FARMVIBES_AI_REMOTE_API_TOKEN_PATH).parts[-3:] == (
+        "farmvibes-ai",
+        "private",
+        "remote_api_token",
+    )
 
 
 def test_client_attaches_optional_bearer_token():

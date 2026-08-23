@@ -16,6 +16,15 @@ from vibe_core.cli.helper import in_wsl, log_should_be_logged_in, verify_to_proc
 from vibe_core.cli.logging import ColorFormatter, log
 from vibe_core.cli.osartifacts import OSArtifacts
 from vibe_core.cli.wrappers import AzureCliWrapper, DaprWrapper, KubectlWrapper, TerraformWrapper
+from vibe_core.security import (
+    API_AUTH_SECRET_KEY as REMOTE_API_AUTH_TOKEN_KEY,
+)
+from vibe_core.security import (
+    API_AUTH_SECRET_NAME as REMOTE_API_AUTH_SECRET,
+)
+from vibe_core.security import (
+    REMOTE_API_TOKEN_FILENAME as REMOTE_API_TOKEN_FILE,
+)
 
 DESTROY_WARNING = (
     "Destroying the cluster will delete *ALL* resources under the resource group "
@@ -26,9 +35,6 @@ DESTROY_WARNING = (
     "This action cannot be undone.\n\n"
     "Do you wish to proceed? (Answering 'y' will wipe the resource group)"
 )
-REMOTE_API_AUTH_SECRET = "farmvibes-api-auth"
-REMOTE_API_AUTH_TOKEN_KEY = "token"
-REMOTE_API_TOKEN_FILE = "remote_api_token"
 REST_API_DEPLOYMENT = "terravibes-rest-api"
 
 
@@ -368,11 +374,8 @@ def setup_or_upgrade(
                 with kubectl.context(kubectl.cluster_name):
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
             elif is_update and token_changed:
-                kubectl.restart(
-                    "deployment",
-                    name=REST_API_DEPLOYMENT,
-                    cluster_name=az.cluster_name,
-                )
+                with kubectl.context(az.cluster_name):
+                    kubectl.restart("deployment", name=REST_API_DEPLOYMENT)
 
     except Exception as e:
         log(f"{e.__class__.__name__}: {e}")

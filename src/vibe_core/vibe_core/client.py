@@ -76,7 +76,7 @@ FARMVIBES_AI_REMOTE_SERVICE_URL_PATH = os.path.join(
 """
 
 FARMVIBES_AI_REMOTE_API_TOKEN_PATH = os.path.join(
-    XDG_CONFIG_HOME, "farmvibes-ai", REMOTE_API_TOKEN_FILENAME
+    XDG_CONFIG_HOME, "farmvibes-ai", "private", REMOTE_API_TOKEN_FILENAME
 )
 """Path to the remote API token file.
 

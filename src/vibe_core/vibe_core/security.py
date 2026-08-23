@@ -24,6 +24,14 @@ _SENSITIVE_KEYS = (
 )
 
 
+def _is_sensitive_key(key: str) -> bool:
+    normalized = "".join(c for c in key.casefold() if c.isalnum())
+    lowered = key.casefold()
+    return any(sensitive in normalized for sensitive in _SENSITIVE_KEYS) or (
+        lowered == "key" or lowered.endswith(("_key", "-key", " key"))
+    )
+
+
 def redact_sensitive(value: Any) -> Any:
     """Return a copy with values under sensitive keys redacted recursively."""
 
@@ -31,11 +39,7 @@ def redact_sensitive(value: Any) -> Any:
         return {
             deepcopy(key): (
                 REDACTED_VALUE
-                if isinstance(key, str)
-                and any(
-                    sensitive in "".join(c for c in key.casefold() if c.isalnum())
-                    for sensitive in _SENSITIVE_KEYS
-                )
+                if isinstance(key, str) and _is_sensitive_key(key)
                 else redact_sensitive(item)
             )
             for key, item in value.items()

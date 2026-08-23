@@ -129,7 +129,7 @@ def require_api_token(
     """Require the configured API token when remote authentication is enabled."""
 
     expected_token = os.getenv(API_TOKEN_ENV_VAR)
-    if not expected_token:
+    if expected_token is None:
         return
     if (
         credentials is not None
@@ -168,9 +168,7 @@ class TerravibesProvider:
         For example, to extract the "status" member from "details", use "details.status".
         """
 
-        sources = [asdict(run) for run in runs]
-        for source in sources:
-            source["parameters"] = redact_sensitive(source["parameters"])
+        sources = [redact_sensitive(asdict(run)) for run in runs]
         summarized_runs = [{k: v for k, v in source.items() if k in fields} for source in sources]
         for field in fields:
             if "." not in field:
@@ -315,8 +313,7 @@ class TerravibesProvider:
             run = (await self.get_bulk_runs_by_id([run_id]))[0]
             run_config_user = RunConfigUser.from_runconfig(run)
             response = jsonable_encoder(self.href_handler.handle(run_config_user))
-            response["parameters"] = redact_sensitive(response["parameters"])
-            return response
+            return redact_sensitive(response)
         except (KeyError, IndexError):
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

@@ -134,6 +134,18 @@ def test_api_token_rejects_malformed_wrong_and_proxy_credentials(
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
+def test_empty_configured_api_token_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(API_TOKEN_ENV_VAR, "")
+    app = TerravibesAPI(LocalHrefHandler("/tmp"))
+
+    response = TestClient(app.versioned_wrapper).get("/v0/workflows")
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
 def test_api_token_allows_bearer_and_leaves_health_and_docs_public(
     authenticated_api: TestClient,
 ):
@@ -645,9 +657,10 @@ async def test_run_parameter_responses_are_redacted_without_changing_state_or_re
         "Password": "hidden",
         "nested": {"api_key": "also-hidden"},
     }
+    raw_workflow = {"name": "helloworld", "parameters": {"pc_key": "workflow-hidden"}}
     run = RunConfig(
         name="sensitive",
-        workflow="helloworld",
+        workflow=deepcopy(raw_workflow),
         parameters=deepcopy(raw_parameters),
         user_input={},
         id=uuid(),
@@ -659,7 +672,14 @@ async def test_run_parameter_responses_are_redacted_without_changing_state_or_re
     provider.get_bulk_runs_by_id = AsyncMock(return_value=[run])  # type: ignore
 
     summary = provider.summarize_runs(
-        [run], ["parameters", "parameters.Password", "parameters.nested.api_key"]
+        [run],
+        [
+            "parameters",
+            "parameters.Password",
+            "parameters.nested.api_key",
+            "workflow",
+            "workflow.parameters.pc_key",
+        ],
     )[0]
     description = await provider.describe_run(run.id)
 
@@ -668,8 +688,12 @@ async def test_run_parameter_responses_are_redacted_without_changing_state_or_re
     assert summary["parameters"]["nested"]["api_key"] == REDACTED_VALUE
     assert summary["parameters.Password"] == REDACTED_VALUE
     assert summary["parameters.nested.api_key"] == REDACTED_VALUE
+    assert summary["workflow"]["parameters"]["pc_key"] == REDACTED_VALUE
+    assert summary["workflow.parameters.pc_key"] == REDACTED_VALUE
     assert description["parameters"] == summary["parameters"]
+    assert description["workflow"] == summary["workflow"]
     assert run.parameters == raw_parameters
+    assert run.workflow == raw_workflow
 
     stored = asdict(run)
     provider.state_store.retrieve = AsyncMock(return_value=stored)
@@ -679,6 +703,7 @@ async def test_run_parameter_responses_are_redacted_without_changing_state_or_re
 
     assert resubmitted.parameters == raw_parameters
     assert stored["parameters"] == raw_parameters
+    assert stored["workflow"] == raw_workflow
 
 
 @pytest.mark.parametrize("blob_df", [(True, type(None)), (False, int)])
