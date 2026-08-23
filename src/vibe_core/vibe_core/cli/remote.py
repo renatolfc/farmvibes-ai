@@ -214,13 +214,9 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
 
 
 def check_cluster_name_length(cluster_name: str) -> bool:
-    # 63 is the maximum length for a DNS label
-    # 2 is the length of the hyphens at the beginning and end
-    # 6 is the length of the sha256 string we append to the cluster name
-    # 3 is the "dns" suffix
-    if len(cluster_name) > (63 - 2 - 6 - 3):
+    if len(cluster_name) > 15:
         log(
-            "Cluster name is too long. Please use a shorter name (max 52 characters)",
+            "Cluster name is too long. Please use a shorter name (max 15 characters)",
             level="error",
         )
         return False
