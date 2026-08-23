@@ -35,3 +35,19 @@ def test_remote_api_auth_kubernetes_contract():
         '        secret_name = "terravibes-rest-api-tls"'
     ) in terraform
     assert '"cert-manager.io/cluster-issuer"            = "letsencrypt"' in terraform
+
+
+def test_remote_services_use_pinned_native_images():
+    root = Path(__file__).parents[1] / "vibe_core"
+    terraform = root / "terraform"
+    wrappers = (root / "cli" / "wrappers.py").read_text()
+    redis = (terraform / "aks" / "modules" / "kubernetes" / "redis.tf").read_text()
+    rabbitmq = (
+        terraform / "aks" / "modules" / "kubernetes" / "rabbitmq.tf"
+    ).read_text()
+
+    assert '"redis_image": REDIS_IMAGE' in wrappers
+    assert '"rabbitmq_image": RABBITMQ_IMAGE' in wrappers
+    assert 'resource "helm_release"' not in redis + rabbitmq
+    assert "image             = var.redis_image" in redis
+    assert "image             = var.rabbitmq_image" in rabbitmq

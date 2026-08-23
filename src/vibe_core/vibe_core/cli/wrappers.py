@@ -417,6 +417,8 @@ class TerraformWrapper:
             "current_user_name": current_user_name,
             "certificate_email": certificate_email,
             "enable_telemetry": str(enable_telemetry).lower(),
+            "redis_image": REDIS_IMAGE,
+            "rabbitmq_image": RABBITMQ_IMAGE,
         }
 
         state_file = self.os_artifacts.get_terraform_file(
