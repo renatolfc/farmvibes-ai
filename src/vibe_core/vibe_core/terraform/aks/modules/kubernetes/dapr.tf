@@ -8,11 +8,11 @@ resource "kubernetes_namespace" "kubernetesdaprnamespace" {
 }
 
 variable "dapr_cloud_environment" {
-  type = map(any)
+  type = map
   default = {
-    "public"       = "AZUREPUBLICCLOUD"
-    "china"        = "AZURECHINACLOUD"
-    "german"       = "AZUREGERMANCLOUD"
+    "public" = "AZUREPUBLICCLOUD"
+    "china" = "AZURECHINACLOUD"
+    "german" = "AZUREGERMANCLOUD"
     "usgovernment" = "AZUREUSGOVERNMENTCLOUD"
   }
 }
@@ -24,12 +24,10 @@ resource "helm_release" "dapr" {
   namespace  = "dapr-system"
   version    = "1.13.3"
 
-  set = [
-    {
-      name  = "enable-ha"
-      value = "true"
-    }
-  ]
+  set {
+    name  = "enable-ha"
+    value = "true"
+  }
 
   depends_on = [helm_release.letsencrypt, kubernetes_namespace.kubernetesdaprnamespace]
 }

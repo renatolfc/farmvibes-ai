@@ -53,18 +53,3 @@ def test_remote_services_use_pinned_native_images():
     assert 'resource "helm_release"' not in redis + rabbitmq
     assert "image             = var.redis_image" in redis
     assert "image             = var.rabbitmq_image" in rabbitmq
-
-
-def test_remote_helm_provider_uses_v3_syntax():
-    terraform = Path(__file__).parents[1] / "vibe_core" / "terraform"
-    module = terraform / "aks" / "modules" / "kubernetes"
-    providers = (module / "providers.tf").read_text()
-    releases = "".join((module / name).read_text() for name in ("init.tf", "cert.tf", "dapr.tf"))
-    services = (terraform / "services" / "providers.tf").read_text()
-
-    assert 'version = "~>3.2"' in providers
-    assert "kubernetes = {" in providers
-    assert "set {" not in releases
-    assert releases.count("set = [") == 3
-    assert 'version    = "2.6.4"' in (module / "init.tf").read_text()
-    assert 'provider "helm"' not in services

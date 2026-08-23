@@ -32,7 +32,7 @@ resource "kubernetes_secret" "user-storage-secret" {
 
 resource "kubernetes_secret" "monitor_instrumentation_key_secret" {
   metadata {
-    name      = "monitor-instrumentation-key-secret"
+    name = "monitor-instrumentation-key-secret"
     namespace = var.namespace
   }
 
@@ -40,7 +40,7 @@ resource "kubernetes_secret" "monitor_instrumentation_key_secret" {
     monitor_instrumentation_key = var.monitor_instrumentation_key
   }
 
-  type       = "Opaque"
+  type = "Opaque"
   depends_on = [data.kubernetes_namespace.kubernetesnamespace]
 }
 
@@ -80,22 +80,20 @@ resource "helm_release" "nginx-ingress" {
   chart      = "nginx-ingress"
   namespace  = "ingress-basic"
   timeout    = 600
-  version    = "2.6.4"
+  version    = "0.16.0"
 
-  set = [
-    {
-      name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-health-probe-request-path"
-      value = "/healthz"
-    },
-    {
-      name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-dns-label-name"
-      value = var.public_ip_dns
-    },
-    {
-      name  = "controller.service.loadBalancerIP"
-      value = var.public_ip_address
-    }
-  ]
+  set {
+    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-health-probe-request-path"
+    value = "/healthz"
+  }
+  set {
+    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-dns-label-name"
+    value = var.public_ip_dns
+  }
+  set {
+    name  = "controller.service.loadBalancerIP"
+    value = var.public_ip_address
+  }
   depends_on = [kubernetes_namespace.kubernetesnginxnamespace]
 }
 
