@@ -19,10 +19,10 @@ locals {
       "--loglevel=${var.farmvibes_log_level}",
     ],
     var.max_log_file_bytes != "" ? [
-        "--max-log-file-bytes=${var.max_log_file_bytes}",
+      "--max-log-file-bytes=${var.max_log_file_bytes}",
     ] : [],
     var.log_backup_count != "" ? [
-        "--log-backup-count=${var.log_backup_count}",
+      "--log-backup-count=${var.log_backup_count}",
     ] : [],
   )
 }
@@ -32,7 +32,7 @@ resource "kubernetes_deployment" "restapi" {
     name      = "terravibes-rest-api"
     namespace = var.namespace
     labels = {
-      app = "terravibes-rest-api"
+      app     = "terravibes-rest-api"
       backend = "terravibes"
     }
   }
@@ -94,6 +94,18 @@ resource "kubernetes_deployment" "restapi" {
             name  = "BLOB_STORAGE_ACCOUNT_CONNECTION_STRING"
             value = "storage-account-connection-string"
           }
+          dynamic "env" {
+            for_each = var.local_deployment ? [] : [1]
+            content {
+              name = "FARMVIBES_API_TOKEN"
+              value_from {
+                secret_key_ref {
+                  name = "farmvibes-api-auth"
+                  key  = "token"
+                }
+              }
+            }
+          }
           dynamic "volume_mount" {
             for_each = var.local_deployment ? [1] : []
             content {
@@ -139,7 +151,7 @@ resource "kubernetes_service" "restapi" {
       name        = "http"
       protocol    = "TCP"
     }
-    type = var.local_deployment ? "ClusterIP" : "LoadBalancer"
+    type = "ClusterIP"
   }
 
   depends_on = [
