@@ -1447,18 +1447,17 @@ class KubectlWrapper:
                 "--context",
                 self.context_name,
                 "get",
-                "secret",
-                name,
+                "secrets",
+                f"--field-selector=metadata.name={name}",
                 "-o",
                 "json",
-                "--ignore-not-found=true",
             ],
-            check_empty_result=False,
             error_string=f"Unable to get secret {name}",
             censor_output=True,
             subprocess_log_level="debug",
         )
-        return json.loads(result) if result else None
+        items = json.loads(result)["items"]
+        return items[0] if items else None
 
     def create_docker_token(self, token_name: str, registry: str, username: str, token: str):
         """Add a secret to the kubernetes cluster.
