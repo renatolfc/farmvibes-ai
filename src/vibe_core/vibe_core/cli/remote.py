@@ -349,9 +349,7 @@ def setup_or_upgrade(
                 enable_telemetry,
                 cleanup_state=True,
             )
-            token_changed = ensure_remote_api_token(
-                os_artifacts, kubectl, rotate=rotate_api_token
-            )
+            ensure_remote_api_token(os_artifacts, kubectl, rotate=rotate_api_token)
             terraform.ensure_services(
                 az.cluster_name,
                 az.resource_group,
@@ -373,7 +371,7 @@ def setup_or_upgrade(
                 log("dapr upgraded, restarting services")
                 with kubectl.context(kubectl.cluster_name):
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
-            elif is_update and token_changed:
+            elif is_update:
                 with kubectl.context(az.cluster_name):
                     kubectl.restart("deployment", name=REST_API_DEPLOYMENT)
 

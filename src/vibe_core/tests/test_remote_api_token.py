@@ -211,12 +211,11 @@ def configured_update(
     return artifacts, az, terraform, kubectl, token
 
 
-@pytest.mark.parametrize("changed,restarts", [(False, 0), (True, 1)])
+@pytest.mark.parametrize("changed", [False, True])
 def test_update_provisions_before_services_and_selectively_restarts_rest_api(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     changed: bool,
-    restarts: int,
 ):
     artifacts, az, terraform, kubectl, provision = configured_update(
         monkeypatch, tmp_path, changed
@@ -230,10 +229,8 @@ def test_update_provisions_before_services_and_selectively_restarts_rest_api(
     assert run_update(artifacts, az, rotate=changed) is True
     assert order == ["token", "services"]
     assert provision.call_args.kwargs["rotate"] is changed
-    assert kubectl.restart.call_count == restarts
-    if changed:
-        kubectl.context.assert_called_once_with("cluster")
-        kubectl.restart.assert_called_once_with("deployment", name="terravibes-rest-api")
+    kubectl.context.assert_called_once_with("cluster")
+    kubectl.restart.assert_called_once_with("deployment", name="terravibes-rest-api")
 
 
 def test_update_token_failure_is_fail_closed_before_services(
