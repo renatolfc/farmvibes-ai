@@ -1,7 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import os
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Final
 
 API_TOKEN_ENV_VAR: Final[str] = "FARMVIBES_API_TOKEN"
@@ -21,7 +23,20 @@ _SENSITIVE_KEYS = (
     "accesskey",
     "privatekey",
     "connectionstring",
+    "authorization",
 )
+
+
+def get_farmvibes_config_dir() -> Path:
+    """Resolve the configuration directory shared by the CLI and client."""
+
+    if configured := os.getenv("FARMVIBES_AI_CONFIG_DIR"):
+        return Path(configured).expanduser()
+    if xdg_config_home := os.getenv("XDG_CONFIG_HOME"):
+        return Path(xdg_config_home).expanduser() / "farmvibes-ai"
+    if xdg_home := os.getenv("XDG_HOME"):
+        return Path(xdg_home).expanduser() / ".config" / "farmvibes-ai"
+    return Path("~/.config/farmvibes-ai").expanduser()
 
 
 def _is_sensitive_key(key: str) -> bool:

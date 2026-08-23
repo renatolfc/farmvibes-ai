@@ -46,7 +46,11 @@ from vibe_core.datamodel import (
     WorkflowRun,
 )
 from vibe_core.monitor import VibeWorkflowDocumenter, VibeWorkflowRunMonitor
-from vibe_core.security import BEARER_SCHEME, REMOTE_API_TOKEN_FILENAME
+from vibe_core.security import (
+    BEARER_SCHEME,
+    REMOTE_API_TOKEN_FILENAME,
+    get_farmvibes_config_dir,
+)
 from vibe_core.utils import ensure_list, format_double_escaped
 
 FALLBACK_SERVICE_URL = "http://127.0.0.1:31108/"
@@ -55,20 +59,20 @@ FALLBACK_SERVICE_URL = "http://127.0.0.1:31108/"
 :meta hide-value:
 """
 
-XDG_CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+FARMVIBES_AI_CONFIG_DIR = str(get_farmvibes_config_dir())
 """Path to configuration file for FarmVibes.AI service.
 
 :meta hide-value:
 """
 
-FARMVIBES_AI_SERVICE_URL_PATH = os.path.join(XDG_CONFIG_HOME, "farmvibes-ai", "service_url")
+FARMVIBES_AI_SERVICE_URL_PATH = os.path.join(FARMVIBES_AI_CONFIG_DIR, "service_url")
 """Path to the local service URL file.
 
 :meta hide-value:
 """
 
 FARMVIBES_AI_REMOTE_SERVICE_URL_PATH = os.path.join(
-    XDG_CONFIG_HOME, "farmvibes-ai", "remote_service_url"
+    FARMVIBES_AI_CONFIG_DIR, "remote_service_url"
 )
 """Path to the local remote service URL file.
 
@@ -76,7 +80,7 @@ FARMVIBES_AI_REMOTE_SERVICE_URL_PATH = os.path.join(
 """
 
 FARMVIBES_AI_REMOTE_API_TOKEN_PATH = os.path.join(
-    XDG_CONFIG_HOME, "farmvibes-ai", "private", REMOTE_API_TOKEN_FILENAME
+    FARMVIBES_AI_CONFIG_DIR, "private", REMOTE_API_TOKEN_FILENAME
 )
 """Path to the remote API token file.
 

@@ -8,7 +8,7 @@ import os
 import secrets
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from vibe_core.cli import helper
 from vibe_core.cli.constants import AZURE_CR_DOMAIN, MAX_WORKER_NODES, REMOTE_SERVICE_URL_PATH_FILE
@@ -89,10 +89,9 @@ def persist_remote_api_token(os_artifacts: OSArtifacts, token: str) -> None:
 def ensure_remote_api_token(
     os_artifacts: OSArtifacts,
     kubectl: KubectlWrapper,
-    rotate: bool = False,
 ) -> bool:
     existing_secret = kubectl.get_secret_or_none(REMOTE_API_AUTH_SECRET)
-    if existing_secret is None or rotate:
+    if existing_secret is None:
         token = secrets.token_urlsafe(48)
         kubectl.upsert_opaque_secret(
             REMOTE_API_AUTH_SECRET, {REMOTE_API_AUTH_TOKEN_KEY: token}
@@ -103,6 +102,54 @@ def ensure_remote_api_token(
         changed = False
     persist_remote_api_token(os_artifacts, token)
     return changed
+
+
+def prepare_remote_api_token(
+    os_artifacts: OSArtifacts,
+    kubectl: KubectlWrapper,
+    rotate: bool,
+) -> Optional[Tuple[str, str]]:
+    """Provision/recover a token or prepare a recoverable rotation."""
+
+    if not rotate:
+        ensure_remote_api_token(os_artifacts, kubectl)
+        return None
+    existing_secret = kubectl.get_secret_or_none(REMOTE_API_AUTH_SECRET)
+    if existing_secret is None:
+        ensure_remote_api_token(os_artifacts, kubectl)
+        return None
+    old_token = remote_api_token_from_secret(existing_secret)
+    persist_remote_api_token(os_artifacts, old_token)
+    return old_token, secrets.token_urlsafe(48)
+
+
+def activate_remote_api_token(
+    os_artifacts: OSArtifacts,
+    kubectl: KubectlWrapper,
+    old_token: str,
+    new_token: str,
+) -> None:
+    """Activate a rotated token, restoring the previous token on failure."""
+
+    def deploy(token: str) -> None:
+        kubectl.upsert_opaque_secret(
+            REMOTE_API_AUTH_SECRET, {REMOTE_API_AUTH_TOKEN_KEY: token}
+        )
+        kubectl.restart("deployment", name=REST_API_DEPLOYMENT)
+        kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
+        persist_remote_api_token(os_artifacts, token)
+
+    try:
+        deploy(new_token)
+    except Exception:
+        try:
+            deploy(old_token)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "Remote API token rotation and rollback failed; recover the "
+                "farmvibes-api-auth Secret before retrying"
+            ) from rollback_error
+        raise
 
 
 def recover_remote_api_token(
@@ -349,7 +396,9 @@ def setup_or_upgrade(
                 enable_telemetry,
                 cleanup_state=True,
             )
-            ensure_remote_api_token(os_artifacts, kubectl, rotate=rotate_api_token)
+            pending_rotation = prepare_remote_api_token(
+                os_artifacts, kubectl, rotate_api_token
+            )
             terraform.ensure_services(
                 az.cluster_name,
                 az.resource_group,
@@ -367,13 +416,18 @@ def setup_or_upgrade(
                 cleanup_state=True,
             )
 
-            if dapr_updated:
-                log("dapr upgraded, restarting services")
-                with kubectl.context(kubectl.cluster_name):
+            with kubectl.context(kubectl.cluster_name):
+                if pending_rotation is not None:
+                    activate_remote_api_token(
+                        os_artifacts, kubectl, *pending_rotation
+                    )
+                if dapr_updated:
+                    log("dapr upgraded, restarting services")
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
-            elif is_update:
-                with kubectl.context(az.cluster_name):
+                    kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
+                elif is_update and pending_rotation is None:
                     kubectl.restart("deployment", name=REST_API_DEPLOYMENT)
+                    kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
 
     except Exception as e:
         log(f"{e.__class__.__name__}: {e}")

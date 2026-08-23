@@ -20,6 +20,8 @@ from typing import Dict, List, NamedTuple, Optional
 import pkg_resources
 import requests
 
+from vibe_core.security import get_farmvibes_config_dir
+
 from .helper import execute_cmd
 from .logging import log
 
@@ -237,12 +239,7 @@ class OSArtifacts:
 
     @property
     def config_dir(self):
-        if "FARMVIBES_AI_CONFIG_DIR" in os.environ:
-            ret = pathlib.Path(os.environ["FARMVIBES_AI_CONFIG_DIR"]).expanduser()
-        elif "XDG_HOME" in os.environ:
-            ret = pathlib.Path(os.environ["XDG_HOME"]).expanduser() / ".config" / "farmvibes-ai"
-        else:
-            ret = (pathlib.Path("~") / ".config" / "farmvibes-ai").expanduser()
+        ret = get_farmvibes_config_dir()
         if not ret.exists():
             log(f"Creating config directory {ret}")
             ret.mkdir(exist_ok=True, parents=True)

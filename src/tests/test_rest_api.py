@@ -655,7 +655,10 @@ async def test_run_parameter_responses_are_redacted_without_changing_state_or_re
     raw_parameters = {
         "visible": "plain",
         "Password": "hidden",
-        "nested": {"api_key": "also-hidden"},
+        "nested": {
+            "api_key": "also-hidden",
+            "headers": {"Authorization": "Bearer workflow-secret"},
+        },
     }
     raw_workflow = {"name": "helloworld", "parameters": {"pc_key": "workflow-hidden"}}
     run = RunConfig(
@@ -677,6 +680,7 @@ async def test_run_parameter_responses_are_redacted_without_changing_state_or_re
             "parameters",
             "parameters.Password",
             "parameters.nested.api_key",
+            "parameters.nested.headers.Authorization",
             "workflow",
             "workflow.parameters.pc_key",
         ],
@@ -688,6 +692,7 @@ async def test_run_parameter_responses_are_redacted_without_changing_state_or_re
     assert summary["parameters"]["nested"]["api_key"] == REDACTED_VALUE
     assert summary["parameters.Password"] == REDACTED_VALUE
     assert summary["parameters.nested.api_key"] == REDACTED_VALUE
+    assert summary["parameters.nested.headers.Authorization"] == REDACTED_VALUE
     assert summary["workflow"]["parameters"]["pc_key"] == REDACTED_VALUE
     assert summary["workflow.parameters.pc_key"] == REDACTED_VALUE
     assert description["parameters"] == summary["parameters"]

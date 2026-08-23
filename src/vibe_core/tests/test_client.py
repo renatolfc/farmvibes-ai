@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import importlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -8,6 +9,7 @@ import pytest
 import requests
 
 import vibe_core.client as client_module
+from vibe_core.cli.osartifacts import OSArtifacts
 from vibe_core.client import (
     FARMVIBES_AI_REMOTE_API_TOKEN_PATH,
     ClusterType,
@@ -23,6 +25,24 @@ def test_remote_token_uses_private_config_directory():
         "private",
         "remote_api_token",
     )
+
+
+def test_client_and_cli_share_config_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    config_dir = tmp_path / "farmvibes-config"
+    with monkeypatch.context() as scoped:
+        scoped.setenv("FARMVIBES_AI_CONFIG_DIR", str(config_dir))
+        reloaded = importlib.reload(client_module)
+
+        assert OSArtifacts().config_dir == config_dir
+        assert Path(reloaded.FARMVIBES_AI_REMOTE_SERVICE_URL_PATH) == (
+            config_dir / "remote_service_url"
+        )
+        assert Path(reloaded.FARMVIBES_AI_REMOTE_API_TOKEN_PATH) == (
+            config_dir / "private" / "remote_api_token"
+        )
+    importlib.reload(client_module)
 
 
 def test_client_attaches_optional_bearer_token():

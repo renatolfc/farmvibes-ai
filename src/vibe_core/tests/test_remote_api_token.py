@@ -77,7 +77,7 @@ def test_opaque_secret_upsert_uses_censored_private_manifest(
     assert not list(artifacts.private_config_dir.iterdir())
 
 
-def test_token_create_recover_and_rotate(tmp_path: Path):
+def test_token_create_and_recover(tmp_path: Path):
     artifacts = configured_artifacts(tmp_path)
     kubectl = Mock(spec=KubectlWrapper)
     kubectl.get_secret_or_none.return_value = None
@@ -94,12 +94,6 @@ def test_token_create_recover_and_rotate(tmp_path: Path):
     assert (
         artifacts.private_config_dir / "remote_api_token"
     ).read_text() == "cluster-token"
-
-    assert remote.ensure_remote_api_token(artifacts, kubectl, rotate=True) is True
-    rotated = kubectl.upsert_opaque_secret.call_args.args[1]["token"]
-    assert rotated not in {created, "cluster-token"}
-    assert (artifacts.private_config_dir / "remote_api_token").read_text() == rotated
-
 
 def test_token_file_is_atomically_replaced_with_private_permissions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -141,6 +135,37 @@ def test_remote_status_recovers_token_from_cluster(
     assert (
         artifacts.private_config_dir / "remote_api_token"
     ).read_text() == "recovered"
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        None,
+        {},
+        {"data": {}},
+        {"data": {"token": "not-base64!"}},
+        {"data": {"token": base64.b64encode(b"\xff").decode()}},
+        encoded_secret(""),
+    ],
+)
+def test_remote_status_rejects_invalid_secret_without_overwriting_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    secret: Any,
+):
+    artifacts = configured_artifacts(tmp_path)
+    token_path = artifacts.private_config_dir / "remote_api_token"
+    token_path.write_text("known-good")
+    az = Mock(cluster_name="cluster", resource_group="group")
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.get_secret_or_none.return_value = secret
+    monkeypatch.setattr(remote, "TerraformWrapper", Mock())
+    monkeypatch.setattr(remote, "_initialize_kubectl", Mock(return_value=kubectl))
+
+    assert remote.status(artifacts, az, "public") is False
+    assert token_path.read_text() == "known-good"
+    kubectl.url_from_ingress.assert_not_called()
+    artifacts.config_file.assert_not_called()
 
 
 def test_remote_update_rotation_flag_is_update_only():
@@ -204,33 +229,37 @@ def configured_update(
     monkeypatch.setattr(remote, "_initialize_kubectl", Mock(return_value=kubectl))
     monkeypatch.setattr(remote, "DaprWrapper", Mock(return_value=dapr))
     monkeypatch.setattr(remote, "status", Mock(return_value=True))
-    token = Mock(side_effect=token_changed) if isinstance(token_changed, Exception) else Mock(
-        return_value=token_changed
+    token = (
+        Mock(side_effect=token_changed)
+        if isinstance(token_changed, Exception)
+        else Mock(return_value=token_changed)
     )
-    monkeypatch.setattr(remote, "ensure_remote_api_token", token)
+    monkeypatch.setattr(remote, "prepare_remote_api_token", token)
+    monkeypatch.setattr(remote, "activate_remote_api_token", Mock())
     return artifacts, az, terraform, kubectl, token
 
 
-@pytest.mark.parametrize("changed", [False, True])
-def test_update_provisions_before_services_and_selectively_restarts_rest_api(
+def test_update_provisions_before_services_and_restarts_rest_api(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    changed: bool,
 ):
     artifacts, az, terraform, kubectl, provision = configured_update(
-        monkeypatch, tmp_path, changed
+        monkeypatch, tmp_path, None
     )
     order = []
-    provision.side_effect = lambda *args, **kwargs: order.append("token") or changed
+    provision.side_effect = lambda *args, **kwargs: order.append("token")
     terraform.ensure_services.side_effect = lambda *args, **kwargs: order.append(
         "services"
     )
 
-    assert run_update(artifacts, az, rotate=changed) is True
+    assert run_update(artifacts, az) is True
     assert order == ["token", "services"]
-    assert provision.call_args.kwargs["rotate"] is changed
+    assert provision.call_args.args[2] is False
     kubectl.context.assert_called_once_with("cluster")
     kubectl.restart.assert_called_once_with("deployment", name="terravibes-rest-api")
+    kubectl.rollout_status.assert_called_once_with(
+        "deployment", "terravibes-rest-api"
+    )
 
 
 def test_update_token_failure_is_fail_closed_before_services(
@@ -243,6 +272,64 @@ def test_update_token_failure_is_fail_closed_before_services(
     assert run_update(artifacts, az) is False
     terraform.ensure_services.assert_not_called()
     kubectl.restart.assert_not_called()
+
+
+def test_rotation_is_applied_after_services(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, az, terraform, kubectl, prepare = configured_update(
+        monkeypatch, tmp_path, ("old", "new")
+    )
+    activation = Mock()
+    monkeypatch.setattr(remote, "activate_remote_api_token", activation)
+    order = []
+    terraform.ensure_services.side_effect = lambda *args, **kwargs: order.append(
+        "services"
+    )
+    activation.side_effect = lambda *args: order.append("rotate")
+
+    assert run_update(artifacts, az, rotate=True) is True
+    assert order == ["services", "rotate"]
+    prepare.assert_called_once_with(artifacts, kubectl, True)
+    activation.assert_called_once_with(artifacts, kubectl, "old", "new")
+
+
+def test_rotation_does_not_change_token_when_services_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, az, terraform, _, _ = configured_update(
+        monkeypatch, tmp_path, ("old", "new")
+    )
+    activation = Mock()
+    monkeypatch.setattr(remote, "activate_remote_api_token", activation)
+    terraform.ensure_services.side_effect = RuntimeError("services failed")
+
+    assert run_update(artifacts, az, rotate=True) is False
+    activation.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["restart", "rollout"])
+def test_rotation_restores_previous_token_on_rollout_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+):
+    artifacts = configured_artifacts(tmp_path)
+    kubectl = Mock(spec=KubectlWrapper)
+    if failure == "restart":
+        kubectl.restart.side_effect = [RuntimeError("restart failed"), None]
+    else:
+        kubectl.rollout_status.side_effect = [RuntimeError("rollout failed"), None]
+
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+        remote.activate_remote_api_token(
+            artifacts, kubectl, "old-token", "new-token"
+        )
+
+    assert [
+        call.args[1]["token"] for call in kubectl.upsert_opaque_secret.call_args_list
+    ] == ["new-token", "old-token"]
+    assert (artifacts.private_config_dir / "remote_api_token").read_text() == "old-token"
 
 
 def run_update(artifacts: Mock, az: Mock, rotate: bool = False) -> bool:
