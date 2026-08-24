@@ -652,7 +652,8 @@ class PrivateCliToolInstaller(Installer, ABC):
 
     @property
     def arch(self) -> str:
-        return "amd64" if platform.machine().lower() in {"x86_64", "amd64"} else platform.machine()
+        arch = platform.machine().lower()
+        return {"x86_64": "amd64", "aarch64": "arm64"}.get(arch, arch)
 
     def install_helper(self, url: str, file_name: str) -> None:
         log(f"Downloading {file_name} from {url}")

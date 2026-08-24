@@ -40,6 +40,11 @@ def test_kubectl_uses_baseline_and_target_cluster_skew() -> None:
     assert not OSArtifacts.kubectl_is_compatible("1.33.9", "1.35.1")
 
 
+def test_kubectl_normalizes_linux_arm64_architecture() -> None:
+    with patch("vibe_core.cli.osartifacts.platform.machine", return_value="aarch64"):
+        assert KubectlInstaller(Path("/tmp")).arch == "arm64"
+
+
 def test_incompatible_kubectl_installs_target_server_minor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
