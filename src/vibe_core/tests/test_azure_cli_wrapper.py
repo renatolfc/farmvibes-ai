@@ -2,11 +2,18 @@
 # Licensed under the MIT License.
 
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 from unittest.mock import Mock, patch
 
+import pytest
+
 from vibe_core.cli import remote
-from vibe_core.cli.osartifacts import KubectlInstaller, OSArtifacts, secure_path
+from vibe_core.cli.osartifacts import (
+    KubectlInstaller,
+    OSArtifacts,
+    github_api_headers,
+    secure_path,
+)
 from vibe_core.cli.wrappers import AzureCliWrapper
 
 
@@ -40,9 +47,9 @@ def test_refresh_aks_credentials_uses_private_admin_kubeconfig(
     az = AzureCliWrapper(artifacts, "cluster", "resource-group")
     az.refresh_az_creds = Mock()
     az.cluster_exists = Mock(return_value=True)
-    commands: list[list[str]] = []
+    commands: List[List[str]] = []
 
-    def execute(command: list[str], *args: Any, **kwargs: Any) -> str:
+    def execute(command: List[str], *args: Any, **kwargs: Any) -> str:
         commands.append(command)
         kubeconfig.touch()
         return ""
@@ -92,3 +99,34 @@ def test_secure_path_uses_owner_only_windows_acl(tmp_path: Path) -> None:
         "capture_output": True,
         "text": True,
     }
+
+
+def test_secure_path_uses_windows_acl_for_wsl_mount() -> None:
+    path = Path("/mnt/c/shared/token")
+
+    with (
+        patch("vibe_core.cli.osartifacts.platform.system", return_value="Linux"),
+        patch("vibe_core.cli.osartifacts.in_wsl", return_value=True),
+        patch(
+            "vibe_core.cli.osartifacts.subprocess.check_output",
+            return_value="C:\\shared\\token\n",
+        ) as check_output,
+        patch("vibe_core.cli.osartifacts.subprocess.run") as run,
+    ):
+        secure_path(path, 0o600)
+
+    check_output.assert_called_once_with(
+        ["wslpath", "-w", str(path)],
+        text=True,
+    )
+    assert run.call_args.args[0][-1] == "C:\\shared\\token"
+
+
+def test_github_api_headers_use_actions_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert github_api_headers() == {}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "actions-token")
+    assert github_api_headers() == {"Authorization": "Bearer actions-token"}

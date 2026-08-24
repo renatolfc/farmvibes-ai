@@ -22,7 +22,7 @@ import requests
 
 from vibe_core.security import get_farmvibes_config_dir
 
-from .helper import execute_cmd
+from .helper import execute_cmd, in_wsl
 from .logging import log
 
 MAJOR_MINOR_PATCH_REGEX = r"\b(?:v)?((?:\d+)(?:\.\d+)?(?:\.\d+)?)(?:(?:\+[a-zA-Z0-9]+)?)\b"
@@ -42,9 +42,22 @@ class DependencyError(Exception):
 
 def secure_path(path: pathlib.Path, mode: int) -> None:
     """Restrict a file or directory to the current user."""
-    if platform.system() != "Windows":
+    is_windows = platform.system() == "Windows"
+    is_windows_mount = (
+        not is_windows
+        and in_wsl()
+        and path.is_absolute()
+        and len(path.parts) > 2
+        and path.parts[1] == "mnt"
+    )
+    if not is_windows and not is_windows_mount:
         os.chmod(path, mode)
         return
+    acl_path = (
+        subprocess.check_output(["wslpath", "-w", str(path)], text=True).strip()
+        if is_windows_mount
+        else str(path)
+    )
 
     script = r"""
 param([string]$Path)
@@ -76,12 +89,18 @@ Set-Acl -LiteralPath $Path -AclObject $acl
             "-NonInteractive",
             "-Command",
             script,
-            str(path),
+            acl_path,
         ],
         check=True,
         capture_output=True,
         text=True,
     )
+
+
+def github_api_headers() -> Dict[str, str]:
+    """Authenticate GitHub API requests when Actions supplies a token."""
+    token = os.getenv("GITHUB_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 class InstallType(Enum):
@@ -673,7 +692,9 @@ class TerraformInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.TERRAFORM_RELEASE_URL)
+            response = requests.get(
+                self.TERRAFORM_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"].replace("v", "")
         except Exception:
@@ -736,7 +757,9 @@ class HelmInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.HELM_RELEASE_URL)
+            response = requests.get(
+                self.HELM_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:
@@ -767,7 +790,9 @@ class K3dInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.K3D_RELEASE_URL)
+            response = requests.get(
+                self.K3D_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:
@@ -798,7 +823,9 @@ class KubeloginInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.KUBELOGIN_RELEASE_URL)
+            response = requests.get(
+                self.KUBELOGIN_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:
@@ -852,7 +879,9 @@ class DaprInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.DAPR_RELEASE_URL)
+            response = requests.get(
+                self.DAPR_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:

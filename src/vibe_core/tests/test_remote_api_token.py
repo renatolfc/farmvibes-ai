@@ -107,13 +107,12 @@ def test_remote_kubectl_uses_managed_kubeconfig(
         cluster_name="cluster",
         resource_group="group",
     )
-    terraform = Mock()
-    terraform.get_kubernetes_config_context.return_value = "cluster-context"
+    artifacts.get_kube_context.return_value = "cluster-admin"
 
-    kubectl = remote._initialize_kubectl(az, terraform)
+    kubectl = remote._initialize_kubectl(az)
 
     assert kubectl is not None
-    assert kubectl.config_context == "cluster-context"
+    assert kubectl.config_context == "cluster-admin"
     assert os.environ["KUBECONFIG"] == str(tmp_path / "kubeconfig")
 
 def test_token_file_is_atomically_replaced_with_private_permissions(

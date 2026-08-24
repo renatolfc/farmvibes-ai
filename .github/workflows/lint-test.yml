@@ -135,6 +135,7 @@ jobs:
       FARMVIBES_AI_STORAGE_PATH: /tmp/farmvibes-ai-migration-${{ github.run_id }}-${{ github.run_attempt }}
       FARMVIBES_AI_CONFIG_DIR: /tmp/farmvibes-ai-config-${{ github.run_id }}-${{ github.run_attempt }}/farmvibes-ai
       XDG_CONFIG_HOME: /tmp/farmvibes-ai-config-${{ github.run_id }}-${{ github.run_attempt }}
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
     - name: Free space before cleanup
       shell: bash

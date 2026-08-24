@@ -11,7 +11,9 @@ from uuid import uuid4 as uuid
 
 import pytest
 import requests
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
 from vibe_common.constants import CONTROL_STATUS_PUBSUB, RUNS_KEY, WORKFLOW_REQUEST_PUBSUB_TOPIC
@@ -23,7 +25,7 @@ from vibe_core.datamodel import RunConfig, RunConfigInput, RunDetails, RunStatus
 from vibe_core.security import API_TOKEN_ENV_VAR, REDACTED_VALUE
 from vibe_server.href_handler import BlobHrefHandler, LocalHrefHandler
 from vibe_server.orchestrator import Orchestrator
-from vibe_server.server import TerravibesAPI, TerravibesProvider
+from vibe_server.server import TerravibesAPI, TerravibesProvider, require_api_token
 from vibe_server.workflow.input_handler import build_args_for_workflow
 from vibe_server.workflow.workflow import load_workflow_by_name
 
@@ -132,6 +134,19 @@ def test_api_token_rejects_malformed_wrong_and_proxy_credentials(
 
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_api_token_rejects_non_ascii_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(API_TOKEN_ENV_VAR, "correct-token")
+
+    with pytest.raises(HTTPException) as error:
+        require_api_token(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials="tëst")
+        )
+
+    assert error.value.status_code == 401
 
 
 def test_empty_configured_api_token_fails_closed(

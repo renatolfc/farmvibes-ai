@@ -38,14 +38,12 @@ DESTROY_WARNING = (
 REST_API_DEPLOYMENT = "terravibes-rest-api"
 
 
-def _initialize_kubectl(
-    az: AzureCliWrapper, terraform: TerraformWrapper
-) -> Optional[KubectlWrapper]:
-    config_context = terraform.get_kubernetes_config_context(az.cluster_name, az.resource_group)
+def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
+    os.environ["KUBECONFIG"] = az.os_artifacts.config_file("kubeconfig")
+    config_context = az.os_artifacts.get_kube_context()
     if not config_context:
         log("Couldn't get Kubernetes config context", level="error")
         return None
-    os.environ["KUBECONFIG"] = az.os_artifacts.config_file("kubeconfig")
     return KubectlWrapper(
         az.os_artifacts, cluster_name=az.cluster_name, config_context=config_context
     )
@@ -175,7 +173,7 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
     log("Refreshing AKS credentials...", level="debug")
     az.refresh_aks_credentials()
     terraform = TerraformWrapper(os_artifacts, az, environment=environment)
-    kubectl = _initialize_kubectl(az, terraform)
+    kubectl = _initialize_kubectl(az)
     if not kubectl:
         return False
     try:
@@ -356,7 +354,7 @@ def setup_or_upgrade(
             )
             secure_path(Path(os_artifacts.config_file("kubeconfig")), 0o600)
 
-            kubectl = _initialize_kubectl(az, terraform)
+            kubectl = _initialize_kubectl(az)
             if not kubectl:
                 log("Couldn't initialize kubectl, not updating", level="error")
                 return False
@@ -511,27 +509,21 @@ def destroy(
 
 
 def add_secret(az: AzureCliWrapper, secret_name: str, secret_value: str, environment: str):
-    kubectl = _initialize_kubectl(
-        az, TerraformWrapper(az.os_artifacts, az, environment=environment)
-    )
+    kubectl = _initialize_kubectl(az)
     if not kubectl:
         return False
     return kubectl.add_secret(secret_name, secret_value)
 
 
 def delete_secret(az: AzureCliWrapper, secret_name: str, environment: str):
-    kubectl = _initialize_kubectl(
-        az, TerraformWrapper(az.os_artifacts, az, environment=environment)
-    )
+    kubectl = _initialize_kubectl(az)
     if not kubectl:
         return False
     return kubectl.delete_secret(secret_name)
 
 
 def restart(az: AzureCliWrapper, environment: str):
-    kubectl = _initialize_kubectl(
-        az, TerraformWrapper(az.os_artifacts, az, environment=environment)
-    )
+    kubectl = _initialize_kubectl(az)
     if not kubectl:
         return False
     try:

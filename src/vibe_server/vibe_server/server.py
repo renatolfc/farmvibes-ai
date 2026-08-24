@@ -134,7 +134,9 @@ def require_api_token(
     if (
         credentials is not None
         and credentials.scheme.casefold() == BEARER_SCHEME.casefold()
-        and hmac.compare_digest(credentials.credentials, expected_token)
+        and hmac.compare_digest(
+            credentials.credentials.encode(), expected_token.encode()
+        )
     ):
         return
     raise HTTPException(
