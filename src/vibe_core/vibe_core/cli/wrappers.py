@@ -1248,6 +1248,27 @@ class AzureCliWrapper:
         execute_cmd(cmd, True, False, error, subprocess_log_level="debug")
         secure_path(Path(self.os_artifacts.config_file("kubeconfig")), 0o600)
 
+    def get_kubernetes_version(self) -> str:
+        return execute_cmd(
+            [
+                self.os_artifacts.az,
+                "aks",
+                "show",
+                "--name",
+                self.cluster_name,
+                "--resource-group",
+                self.resource_group,
+                "--query",
+                "kubernetesVersion",
+                "-o",
+                "tsv",
+            ],
+            check_return_code=True,
+            check_empty_result=True,
+            error_string="Couldn't get AKS Kubernetes version",
+            capture_output=True,
+        ).strip()
+
     def ensure_azurerm_backend(
         self,
         location: str,

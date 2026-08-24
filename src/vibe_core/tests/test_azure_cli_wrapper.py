@@ -32,9 +32,54 @@ def test_remote_cluster_name_fits_key_vault_limit() -> None:
     assert not remote.check_cluster_name_length("a" * 16)
 
 
-def test_kubectl_does_not_replace_clients_for_unrelated_cluster_versions() -> None:
-    assert OSArtifacts.REQUIRED_TOOLS["kubectl"].minimum_version is None
+def test_kubectl_uses_baseline_and_target_cluster_skew() -> None:
+    assert OSArtifacts.REQUIRED_TOOLS["kubectl"].minimum_version == "1.27.0"
     assert KubectlInstaller.KUBECTL_RELEASE_URL.startswith("https://dl.k8s.io/")
+    assert OSArtifacts.kubectl_is_compatible("1.34.9", "1.35.1")
+    assert OSArtifacts.kubectl_is_compatible("1.36.0", "1.35.1")
+    assert not OSArtifacts.kubectl_is_compatible("1.33.9", "1.35.1")
+
+
+def test_incompatible_kubectl_installs_target_server_minor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(tmp_path))
+    artifacts = OSArtifacts()
+    artifacts._kubectl_path = "/tmp/old-kubectl"
+    artifacts.get_version = Mock(side_effect=["1.30.0", "1.35.9"])
+
+    with patch("vibe_core.cli.osartifacts.KubectlInstaller") as installer:
+        installer.return_value.cli_name = "kubectl"
+        artifacts.ensure_compatible_kubectl("1.35.1")
+
+    installer.assert_called_once_with(tmp_path, "1.35")
+    installer.return_value.install.assert_called_once_with()
+    assert artifacts.kubectl == str(tmp_path / "kubectl")
+
+
+def test_get_kubernetes_version_queries_requested_cluster() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.az = "az"
+    az = AzureCliWrapper(artifacts, "cluster", "resource-group")
+
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd", return_value="1.35.1\n"
+    ) as execute:
+        assert az.get_kubernetes_version() == "1.35.1"
+
+    assert execute.call_args.args[0] == [
+        "az",
+        "aks",
+        "show",
+        "--name",
+        "cluster",
+        "--resource-group",
+        "resource-group",
+        "--query",
+        "kubernetesVersion",
+        "-o",
+        "tsv",
+    ]
 
 
 def test_refresh_aks_credentials_uses_private_admin_kubeconfig(

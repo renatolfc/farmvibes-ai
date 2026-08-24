@@ -56,6 +56,7 @@ REMOTE_REDIS_MIGRATION_BACKUP_PREFIX = "remote-redis-migration"
 def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
     if az.refresh_aks_credentials() is False:
         return None
+    az.os_artifacts.ensure_compatible_kubectl(az.get_kubernetes_version())
     os.environ["KUBECONFIG"] = az.os_artifacts.config_file("kubeconfig")
     config_context = az.os_artifacts.get_kube_context()
     if not config_context:

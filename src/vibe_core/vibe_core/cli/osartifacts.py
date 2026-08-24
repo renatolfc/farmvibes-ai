@@ -166,6 +166,7 @@ class OSArtifacts:
             "https://kubernetes.io/docs/tasks/tools/install-kubectl/",
             InstallType.ALL,
             version_argument="version --client --output=yaml",
+            minimum_version="1.27.0",
             version_regex=rf"gitVersion:\s+{MAJOR_MINOR_PATCH_REGEX}",
         ),
         "kubelogin": Dependency(
@@ -186,6 +187,7 @@ class OSArtifacts:
     def __init__(self):
         self._local_terraform_path = ""
         self._aks_terraform_path = ""
+        self._kubectl_path = ""
 
     def check_dependencies(self, type: InstallType = InstallType.ALL) -> None:
         for dependency in self.REQUIRED_TOOLS.values():
@@ -353,7 +355,7 @@ class OSArtifacts:
 
     @property
     def kubectl(self) -> str:
-        return self._binary("kubectl")
+        return self._kubectl_path or self._binary("kubectl")
 
     @property
     def kubelogin(self) -> str:
@@ -480,6 +482,31 @@ class OSArtifacts:
     def install_kubectl(self) -> None:
         installer = KubectlInstaller(self.config_dir)
         installer.install()
+
+    @staticmethod
+    def kubectl_is_compatible(client_version: str, server_version: str) -> bool:
+        client = [int(part) for part in client_version.split(".")[:2]]
+        server = [int(part) for part in server_version.split(".")[:2]]
+        return client[0] == server[0] and abs(client[1] - server[1]) <= 1
+
+    def ensure_compatible_kubectl(self, server_version: str) -> None:
+        dependency = self.REQUIRED_TOOLS["kubectl"]
+        current = self.get_version(dependency, pathlib.Path(self.kubectl))
+        if self.kubectl_is_compatible(current, server_version):
+            return
+        server_minor = ".".join(server_version.split(".")[:2])
+        log(
+            f"kubectl {current} is incompatible with Kubernetes {server_version}; "
+            f"installing the latest {server_minor} client"
+        )
+        installer = KubectlInstaller(self.config_dir, server_minor)
+        installer.install()
+        self._kubectl_path = str(self.config_dir / installer.cli_name)
+        installed = self.get_version(dependency, pathlib.Path(self._kubectl_path))
+        if not self.kubectl_is_compatible(installed, server_version):
+            raise DependencyError(
+                f"kubectl {installed} is incompatible with Kubernetes {server_version}"
+            )
 
     def install_kubelogin(self) -> None:
         installer = KubeloginInstaller(self.config_dir)
@@ -722,10 +749,21 @@ class KubectlInstaller(PrivateCliToolInstaller):
     KUBECTL_RELEASE_URL = "https://dl.k8s.io/release/stable.txt"
     KUBECTL_BASE_URL = "https://dl.k8s.io/release"
 
+    def __init__(
+        self, config_dir: Optional[pathlib.Path], server_minor: str = ""
+    ) -> None:
+        super().__init__(config_dir)
+        self.server_minor = server_minor
+
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.KUBECTL_RELEASE_URL)
+            release_url = (
+                f"{self.KUBECTL_BASE_URL}/stable-{self.server_minor}.txt"
+                if self.server_minor
+                else self.KUBECTL_RELEASE_URL
+            )
+            response = requests.get(release_url)
             response.raise_for_status()
             return response.text.strip()
         except Exception:

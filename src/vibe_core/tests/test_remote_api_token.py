@@ -137,6 +137,7 @@ def test_remote_kubectl_uses_managed_kubeconfig(
         resource_group="group",
     )
     artifacts.get_kube_context.return_value = "cluster-admin"
+    az.get_kubernetes_version.return_value = "1.35.0"
 
     kubectl = remote._initialize_kubectl(az)
 
@@ -144,6 +145,7 @@ def test_remote_kubectl_uses_managed_kubeconfig(
     assert kubectl.config_context == "cluster-admin"
     assert os.environ["KUBECONFIG"] == str(tmp_path / "kubeconfig")
     az.refresh_aks_credentials.assert_called_once_with()
+    artifacts.ensure_compatible_kubectl.assert_called_once_with("1.35.0")
 
 
 def test_remote_kubectl_stops_when_requested_cluster_does_not_exist(
