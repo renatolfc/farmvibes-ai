@@ -72,7 +72,12 @@ from vibe_core.datamodel import (
     SpatioTemporalJson,
 )
 from vibe_core.logconfig import LOG_BACKUP_COUNT, MAX_LOG_FILE_BYTES, configure_logging
-from vibe_core.security import API_TOKEN_ENV_VAR, BEARER_SCHEME, redact_sensitive
+from vibe_core.security import (
+    API_TOKEN_ENV_VAR,
+    BEARER_SCHEME,
+    REDACTED_VALUE,
+    redact_sensitive,
+)
 
 from .href_handler import BlobHrefHandler, HrefHandler, LocalHrefHandler
 from .workflow import get_workflow_path, workflow_from_input
@@ -180,8 +185,10 @@ class TerravibesProvider:
                 obj = src
                 try:
                     for prefix in prefixes.split("."):
+                        if obj == REDACTED_VALUE:
+                            break
                         obj = obj[prefix]
-                    value = obj[suffix]
+                    value = REDACTED_VALUE if obj == REDACTED_VALUE else obj[suffix]
                 except (KeyError, TypeError) as e:
                     raise KeyError(
                         f"Workflow run with id {runs[i].id} does not have field {field}"
