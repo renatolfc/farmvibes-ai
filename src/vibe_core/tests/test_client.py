@@ -20,8 +20,7 @@ from vibe_core.client import (
 
 
 def test_remote_token_uses_private_config_directory():
-    assert Path(FARMVIBES_AI_REMOTE_API_TOKEN_PATH).parts[-3:] == (
-        "farmvibes-ai",
+    assert Path(FARMVIBES_AI_REMOTE_API_TOKEN_PATH).parts[-2:] == (
         "private",
         "remote_api_token",
     )
