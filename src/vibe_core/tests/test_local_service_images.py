@@ -2803,7 +2803,7 @@ def test_registry_secret_operations_use_bound_context(
 
     def capture(command: Any, **kwargs: Any) -> str:
         commands.append(command)
-        return '{"items": []}' if "get" in command else ""
+        return ""
 
     monkeypatch.setattr(wrappers, "execute_cmd", capture)
     kubectl = KubectlWrapper(artifacts, "test")
@@ -2832,7 +2832,7 @@ def test_registry_secret_json_output_is_censored(
 
     def capture(command: Any, **kwargs: Any) -> str:
         invocation.update(kwargs)
-        return json.dumps({"items": [secret]})
+        return json.dumps(secret)
 
     monkeypatch.setattr(wrappers, "execute_cmd", capture)
 
@@ -2851,12 +2851,12 @@ def test_missing_registry_secret_returns_none(
 
     def capture(command: Any, **kwargs: Any) -> str:
         invocation["command"] = command
-        return '{"items": []}'
+        return ""
 
     monkeypatch.setattr(wrappers, "execute_cmd", capture)
 
     assert KubectlWrapper(artifacts, "test").get_secret_or_none("missing") is None
-    assert "--field-selector=metadata.name=missing" in invocation["command"]
+    assert invocation["command"][-1] == "--ignore-not-found=true"
 
 
 def test_image_preflight_manifest_uses_selected_pull_secret(
