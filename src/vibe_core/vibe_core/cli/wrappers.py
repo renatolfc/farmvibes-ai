@@ -1499,7 +1499,10 @@ class KubectlWrapper:
         if ignore_not_found:
             cmd.append("--ignore-not-found=true")
         execute_cmd(
-            cmd, error_string=f"Unable to delete {kind} {name}", subprocess_log_level="debug"
+            cmd,
+            check_empty_result=False,
+            error_string=f"Unable to delete {kind} {name}",
+            subprocess_log_level="debug",
         )
 
     def get_secret(self, name: str, key: str, cluster_name: str = ""):

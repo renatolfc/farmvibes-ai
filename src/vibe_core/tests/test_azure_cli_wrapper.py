@@ -14,7 +14,7 @@ from vibe_core.cli.osartifacts import (
     github_api_headers,
     secure_path,
 )
-from vibe_core.cli.wrappers import AzureCliWrapper, TerraformWrapper
+from vibe_core.cli.wrappers import AzureCliWrapper, KubectlWrapper, TerraformWrapper
 
 
 def test_get_storage_account_key_accepts_wrapped_azure_cli_response() -> None:
@@ -217,3 +217,21 @@ def test_legacy_service_charts_are_destroyed_before_rabbitmq_pvc_reset() -> None
     kubectl.return_value.delete.assert_called_once_with(
         "pvc", "data-rabbitmq-0", ignore_not_found=True
     )
+
+
+def test_kubectl_ignore_not_found_delete_accepts_empty_output() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    kubectl = KubectlWrapper(artifacts, "cluster", config_context="cluster-admin")
+
+    with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
+        kubectl.delete("pvc", "missing", ignore_not_found=True)
+
+    assert execute.call_args.args[0] == [
+        "kubectl",
+        "delete",
+        "pvc",
+        "missing",
+        "--ignore-not-found=true",
+    ]
+    assert execute.call_args.kwargs["check_empty_result"] is False

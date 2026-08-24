@@ -80,4 +80,4 @@ def test_remote_aks_keeps_required_oidc_issuer_enabled():
         / "kubernetes.tf"
     ).read_text()
 
-    assert "oidc_issuer_enabled        = true" in terraform
+    assert "oidc_issuer_enabled       = true" in terraform
