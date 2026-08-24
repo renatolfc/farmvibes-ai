@@ -83,8 +83,7 @@ def remote_api_token_from_secret(secret: Dict[str, Any]) -> str:
     return token
 
 
-def persist_remote_api_token(os_artifacts: OSArtifacts, token: str) -> None:
-    path = Path(os_artifacts.private_config_dir) / REMOTE_API_TOKEN_FILE
+def persist_private_text(path: Path, value: str) -> None:
     descriptor, temporary_path = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}."
     )
@@ -93,7 +92,7 @@ def persist_remote_api_token(os_artifacts: OSArtifacts, token: str) -> None:
         output = os.fdopen(descriptor, "w", encoding="utf-8")
         descriptor = -1
         with output:
-            output.write(token)
+            output.write(value)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary_path, path)
@@ -105,10 +104,28 @@ def persist_remote_api_token(os_artifacts: OSArtifacts, token: str) -> None:
             os.remove(temporary_path)
 
 
-def ensure_remote_api_token(
-    os_artifacts: OSArtifacts,
-    kubectl: KubectlWrapper,
-) -> bool:
+def persist_remote_api_config(
+    os_artifacts: OSArtifacts, url: str, token: str
+) -> None:
+    url_path = Path(os_artifacts.config_file(REMOTE_SERVICE_URL_PATH_FILE))
+    token_path = Path(os_artifacts.private_config_dir) / REMOTE_API_TOKEN_FILE
+    previous = {
+        path: path.read_text() if path.exists() else None
+        for path in (url_path, token_path)
+    }
+    try:
+        persist_private_text(url_path, url)
+        persist_private_text(token_path, token)
+    except Exception:
+        for path, value in previous.items():
+            if value is None:
+                path.unlink(missing_ok=True)
+            else:
+                persist_private_text(path, value)
+        raise
+
+
+def ensure_remote_api_token(kubectl: KubectlWrapper) -> bool:
     existing_secret = kubectl.get_secret_or_none(REMOTE_API_AUTH_SECRET)
     if existing_secret is None:
         token = secrets.token_urlsafe(48)
@@ -126,35 +143,31 @@ def ensure_remote_api_token(
                 REMOTE_API_AUTH_SECRET, {REMOTE_API_AUTH_TOKEN_KEY: token}
             )
             changed = True
-    persist_remote_api_token(os_artifacts, token)
     return changed
 
 
 def prepare_remote_api_token(
-    os_artifacts: OSArtifacts,
     kubectl: KubectlWrapper,
     rotate: bool,
 ) -> Optional[Tuple[str, str]]:
     """Provision/recover a token or prepare a recoverable rotation."""
 
     if not rotate:
-        ensure_remote_api_token(os_artifacts, kubectl)
+        ensure_remote_api_token(kubectl)
         return None
     existing_secret = kubectl.get_secret_or_none(REMOTE_API_AUTH_SECRET)
     if existing_secret is None:
-        ensure_remote_api_token(os_artifacts, kubectl)
+        ensure_remote_api_token(kubectl)
         return None
     try:
         old_token = remote_api_token_from_secret(existing_secret)
     except ValueError:
-        ensure_remote_api_token(os_artifacts, kubectl)
+        ensure_remote_api_token(kubectl)
         return None
-    persist_remote_api_token(os_artifacts, old_token)
     return old_token, secrets.token_urlsafe(48)
 
 
 def activate_remote_api_token(
-    os_artifacts: OSArtifacts,
     kubectl: KubectlWrapper,
     old_token: str,
     new_token: str,
@@ -167,7 +180,6 @@ def activate_remote_api_token(
         )
         kubectl.restart("deployment", name=REST_API_DEPLOYMENT)
         kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
-        persist_remote_api_token(os_artifacts, token)
 
     try:
         deploy(new_token)
@@ -182,13 +194,11 @@ def activate_remote_api_token(
         raise
 
 
-def recover_remote_api_token(
-    os_artifacts: OSArtifacts, kubectl: KubectlWrapper
-) -> None:
+def recover_remote_api_token(kubectl: KubectlWrapper) -> str:
     secret = kubectl.get_secret_or_none(REMOTE_API_AUTH_SECRET)
     if secret is None:
         raise ValueError("Remote API token Secret does not exist; run remote update")
-    persist_remote_api_token(os_artifacts, remote_api_token_from_secret(secret))
+    return remote_api_token_from_secret(secret)
 
 
 def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> bool:
@@ -208,7 +218,7 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
     if not kubectl:
         return False
     try:
-        recover_remote_api_token(os_artifacts, kubectl)
+        token = recover_remote_api_token(kubectl)
     except (OSError, ValueError):
         log(
             "Couldn't recover the remote API token. Run `farmvibes-ai remote update` "
@@ -228,10 +238,7 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
         return False
 
     url = url.replace('"', "")
-    url_path = Path(os_artifacts.config_file(REMOTE_SERVICE_URL_PATH_FILE))
-    with open(url_path, "w") as f:
-        f.write(url)
-    secure_path(url_path, 0o600)
+    persist_remote_api_config(os_artifacts, url, token)
 
     log(f"URL for your AKS Cluster is: {url}")
     if failed:
@@ -455,9 +462,7 @@ def setup_or_upgrade(
                 ):
                     raise RuntimeError("Unable to restore Redis after service migration")
                 migration_backup.unlink()
-            pending_rotation = prepare_remote_api_token(
-                os_artifacts, kubectl, rotate_api_token
-            )
+            pending_rotation = prepare_remote_api_token(kubectl, rotate_api_token)
             terraform.ensure_services(
                 az.cluster_name,
                 az.resource_group,
@@ -477,9 +482,7 @@ def setup_or_upgrade(
 
             with kubectl.context(kubectl.cluster_name):
                 if pending_rotation is not None:
-                    activate_remote_api_token(
-                        os_artifacts, kubectl, *pending_rotation
-                    )
+                    activate_remote_api_token(kubectl, *pending_rotation)
                 if is_update:
                     log("remote cluster updated, restarting services")
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
