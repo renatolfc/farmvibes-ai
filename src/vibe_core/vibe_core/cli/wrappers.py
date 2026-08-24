@@ -211,11 +211,24 @@ class TerraformWrapper:
             if on_destroy is not None:
                 on_destroy()
             self.destroy(working_directory, state_file, variables, targets=legacy)
-        KubectlWrapper(
+        kubectl = KubectlWrapper(
             self.os_artifacts,
             cluster_name,
             config_context=kubernetes_config_context,
-        ).delete("pvc", "data-rabbitmq-0", ignore_not_found=True)
+        )
+        delete_rabbitmq_pvc = "helm_release.rabbitmq" in legacy
+        with kubectl.context():
+            if not delete_rabbitmq_pvc:
+                pvc = kubectl.get_or_none("pvc", "data-rabbitmq-0")
+                labels = pvc.get("metadata", {}).get("labels", {}) if pvc else {}
+                delete_rabbitmq_pvc = (
+                    labels.get("app.kubernetes.io/managed-by") == "Helm"
+                    and labels.get("app.kubernetes.io/instance") == "rabbitmq"
+                )
+            if delete_rabbitmq_pvc:
+                kubectl.delete(
+                    "pvc", "data-rabbitmq-0", ignore_not_found=True
+                )
 
     def get_output(
         self,

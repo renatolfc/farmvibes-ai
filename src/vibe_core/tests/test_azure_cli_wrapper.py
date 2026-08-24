@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, List
 from unittest.mock import Mock, patch
@@ -219,6 +220,55 @@ def test_legacy_service_charts_are_destroyed_before_rabbitmq_pvc_reset() -> None
         {"namespace": "default"},
         targets=["helm_release.redis", "helm_release.rabbitmq"],
     )
+    kubectl.return_value.delete.assert_called_once_with(
+        "pvc", "data-rabbitmq-0", ignore_not_found=True
+    )
+
+
+def test_unowned_rabbitmq_pvc_is_not_deleted() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    terraform = TerraformWrapper(artifacts)
+    terraform.state_resources = Mock(return_value=[])
+
+    with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl:
+        kubectl.return_value.context.return_value = nullcontext()
+        kubectl.return_value.get_or_none.return_value = {
+            "metadata": {"labels": {"app": "unrelated"}}
+        }
+        terraform.destroy_legacy_service_charts(
+            "/terraform",
+            "state.tfstate",
+            {"namespace": "default"},
+            "cluster",
+            "cluster-admin",
+        )
+
+    kubectl.return_value.delete.assert_not_called()
+
+
+def test_residual_helm_rabbitmq_pvc_is_deleted() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    terraform = TerraformWrapper(artifacts)
+    terraform.state_resources = Mock(return_value=[])
+
+    with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl:
+        kubectl.return_value.context.return_value = nullcontext()
+        kubectl.return_value.get_or_none.return_value = {
+            "metadata": {
+                "labels": {
+                    "app.kubernetes.io/managed-by": "Helm",
+                    "app.kubernetes.io/instance": "rabbitmq",
+                }
+            }
+        }
+        terraform.destroy_legacy_service_charts(
+            "/terraform",
+            "state.tfstate",
+            {"namespace": "default"},
+            "cluster",
+            "cluster-admin",
+        )
+
     kubectl.return_value.delete.assert_called_once_with(
         "pvc", "data-rabbitmq-0", ignore_not_found=True
     )
