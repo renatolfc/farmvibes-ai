@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from functools import partialmethod
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -22,7 +22,7 @@ import requests
 from .constants import RABBITMQ_IMAGE, REDIS_IMAGE
 from .helper import execute_cmd, is_port_free, log_should_be_logged_in, verify_to_proceed
 from .logging import ColorFormatter, log
-from .osartifacts import OSArtifacts
+from .osartifacts import OSArtifacts, secure_path
 
 AZ_CREDS_REFRESH_ATTEMPTS = 2
 AZ_LOGIN_PROMPT = "`az login`"
@@ -1186,7 +1186,7 @@ class AzureCliWrapper:
 
         error = "Couldn't get kubernetes credentials. Do you have access to the cluster?"
         execute_cmd(cmd, True, False, error, subprocess_log_level="debug")
-        os.chmod(self.os_artifacts.config_file("kubeconfig"), 0o600)
+        secure_path(Path(self.os_artifacts.config_file("kubeconfig")), 0o600)
 
     def ensure_azurerm_backend(
         self,
@@ -1531,7 +1531,7 @@ class KubectlWrapper:
             suffix=".json",
         )
         try:
-            os.chmod(manifest_path, 0o600)
+            secure_path(Path(manifest_path), 0o600)
             manifest_file = os.fdopen(descriptor, "w")
             descriptor = -1
             with manifest_file:

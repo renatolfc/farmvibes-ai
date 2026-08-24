@@ -14,7 +14,7 @@ from vibe_core.cli import helper
 from vibe_core.cli.constants import AZURE_CR_DOMAIN, MAX_WORKER_NODES, REMOTE_SERVICE_URL_PATH_FILE
 from vibe_core.cli.helper import in_wsl, log_should_be_logged_in, verify_to_proceed
 from vibe_core.cli.logging import ColorFormatter, log
-from vibe_core.cli.osartifacts import OSArtifacts
+from vibe_core.cli.osartifacts import OSArtifacts, secure_path
 from vibe_core.cli.wrappers import AzureCliWrapper, DaprWrapper, KubectlWrapper, TerraformWrapper
 from vibe_core.security import (
     API_AUTH_SECRET_KEY as REMOTE_API_AUTH_TOKEN_KEY,
@@ -71,7 +71,7 @@ def persist_remote_api_token(os_artifacts: OSArtifacts, token: str) -> None:
         dir=path.parent, prefix=f".{path.name}."
     )
     try:
-        os.chmod(temporary_path, 0o600)
+        secure_path(Path(temporary_path), 0o600)
         output = os.fdopen(descriptor, "w", encoding="utf-8")
         descriptor = -1
         with output:
@@ -79,7 +79,7 @@ def persist_remote_api_token(os_artifacts: OSArtifacts, token: str) -> None:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary_path, path)
-        os.chmod(path, 0o600)
+        secure_path(path, 0o600)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -354,6 +354,7 @@ def setup_or_upgrade(
                 cleanup_state=True,
                 is_update=is_update,
             )
+            secure_path(Path(os_artifacts.config_file("kubeconfig")), 0o600)
 
             kubectl = _initialize_kubectl(az, terraform)
             if not kubectl:

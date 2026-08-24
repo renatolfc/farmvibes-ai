@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 from vibe_core.cli import remote
-from vibe_core.cli.osartifacts import KubectlInstaller, OSArtifacts
+from vibe_core.cli.osartifacts import KubectlInstaller, OSArtifacts, secure_path
 from vibe_core.cli.wrappers import AzureCliWrapper
 
 
@@ -66,3 +66,29 @@ def test_refresh_aks_credentials_uses_private_admin_kubeconfig(
         ]
     ]
     assert kubeconfig.stat().st_mode & 0o777 == 0o600
+
+
+def test_secure_path_uses_owner_only_windows_acl(tmp_path: Path) -> None:
+    path = tmp_path / "token"
+    path.touch()
+
+    with (
+        patch("vibe_core.cli.osartifacts.platform.system", return_value="Windows"),
+        patch("vibe_core.cli.osartifacts.subprocess.run") as run,
+    ):
+        secure_path(path, 0o600)
+
+    command = run.call_args.args[0]
+    assert command[:4] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+    ]
+    assert command[-1] == str(path)
+    assert "SetAccessRuleProtection($true, $false)" in command[-2]
+    assert run.call_args.kwargs == {
+        "check": True,
+        "capture_output": True,
+        "text": True,
+    }

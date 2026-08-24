@@ -101,6 +101,7 @@ def test_remote_kubectl_uses_managed_kubeconfig(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     artifacts = configured_artifacts(tmp_path)
+    (tmp_path / "kubeconfig").touch()
     az = Mock(
         os_artifacts=artifacts,
         cluster_name="cluster",
@@ -207,6 +208,7 @@ def configured_update(
     token_changed: Any,
 ):
     artifacts = configured_artifacts(tmp_path)
+    (tmp_path / "kubeconfig").touch()
     az = Mock(
         cluster_name="cluster",
         resource_group="group",

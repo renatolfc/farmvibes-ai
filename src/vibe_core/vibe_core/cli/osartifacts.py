@@ -40,6 +40,50 @@ class DependencyError(Exception):
     pass
 
 
+def secure_path(path: pathlib.Path, mode: int) -> None:
+    """Restrict a file or directory to the current user."""
+    if platform.system() != "Windows":
+        os.chmod(path, mode)
+        return
+
+    script = r"""
+param([string]$Path)
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$item = Get-Item -LiteralPath $Path -Force
+if ($item.PSIsContainer) {
+    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+} else {
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+}
+$acl.SetOwner($identity)
+$acl.SetAccessRuleProtection($true, $false)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $identity,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    $inheritance,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+)
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $Path -AclObject $acl
+"""
+    subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 class InstallType(Enum):
     ALL = "all"
     LOCAL = "local"
@@ -249,7 +293,7 @@ class OSArtifacts:
     def private_config_dir(self):
         ret = self.config_dir / "private"
         ret.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(ret, 0o700)
+        secure_path(ret, 0o700)
         return ret
 
     @property
