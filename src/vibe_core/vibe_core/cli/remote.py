@@ -355,7 +355,6 @@ def setup_or_upgrade(
                 is_update=is_update,
             )
 
-            dapr_updated = False
             kubectl = _initialize_kubectl(az, terraform)
             if not kubectl:
                 log("Couldn't initialize kubectl, not updating", level="error")
@@ -366,7 +365,6 @@ def setup_or_upgrade(
                 if not dapr.upgrade_crds():
                     log("Unable to upgrade Dapr CRDs", level="error")
                     return False
-                dapr_updated = True
 
             k8s_results = terraform.ensure_k8s_cluster(
                 az.cluster_name,
@@ -418,12 +416,9 @@ def setup_or_upgrade(
                     activate_remote_api_token(
                         os_artifacts, kubectl, *pending_rotation
                     )
-                if dapr_updated:
-                    log("dapr upgraded, restarting services")
+                if is_update:
+                    log("remote cluster updated, restarting services")
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
-                    kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
-                elif is_update and pending_rotation is None:
-                    kubectl.restart("deployment", name=REST_API_DEPLOYMENT)
                     kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
 
     except Exception as e:

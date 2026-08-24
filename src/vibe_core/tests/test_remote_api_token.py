@@ -259,7 +259,7 @@ def configured_update(
     return artifacts, az, terraform, kubectl, token
 
 
-def test_update_provisions_before_services_and_restarts_rest_api(
+def test_update_provisions_before_services_and_restarts_services(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -276,7 +276,9 @@ def test_update_provisions_before_services_and_restarts_rest_api(
     assert order == ["token", "services"]
     assert provision.call_args.args[2] is False
     kubectl.context.assert_called_once_with("cluster")
-    kubectl.restart.assert_called_once_with("deployment", name="terravibes-rest-api")
+    kubectl.restart.assert_called_once_with(
+        "deployment", selectors=["backend=terravibes"]
+    )
     kubectl.rollout_status.assert_called_once_with(
         "deployment", "terravibes-rest-api"
     )
@@ -312,6 +314,12 @@ def test_rotation_is_applied_after_services(
     assert order == ["services", "rotate"]
     prepare.assert_called_once_with(artifacts, kubectl, True)
     activation.assert_called_once_with(artifacts, kubectl, "old", "new")
+    kubectl.restart.assert_called_once_with(
+        "deployment", selectors=["backend=terravibes"]
+    )
+    kubectl.rollout_status.assert_called_once_with(
+        "deployment", "terravibes-rest-api"
+    )
 
 
 def test_rotation_does_not_change_token_when_services_fail(
