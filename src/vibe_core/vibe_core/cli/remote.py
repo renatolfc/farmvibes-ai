@@ -47,6 +47,8 @@ REMOTE_REDIS_MIGRATION_BACKUP_PREFIX = "remote-redis-migration"
 
 
 def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
+    if az.refresh_aks_credentials() is False:
+        return None
     os.environ["KUBECONFIG"] = az.os_artifacts.config_file("kubeconfig")
     config_context = az.os_artifacts.get_kube_context()
     if not config_context:
@@ -218,8 +220,6 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
         return False
 
     log("Refreshing AKS credentials...", level="debug")
-    if az.refresh_aks_credentials() is False:
-        return False
     terraform = TerraformWrapper(os_artifacts, az, environment=environment)
     kubectl = _initialize_kubectl(az)
     if not kubectl:
@@ -356,8 +356,6 @@ def setup_or_upgrade(
                 az.cluster_name,
                 az.resource_group,
             )
-        else:
-            az.refresh_aks_credentials()
 
         storage_name, container_name, storage_access_key = az.ensure_azurerm_backend(
             region,

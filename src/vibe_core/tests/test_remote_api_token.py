@@ -143,6 +143,19 @@ def test_remote_kubectl_uses_managed_kubeconfig(
     assert kubectl is not None
     assert kubectl.config_context == "cluster-admin"
     assert os.environ["KUBECONFIG"] == str(tmp_path / "kubeconfig")
+    az.refresh_aks_credentials.assert_called_once_with()
+
+
+def test_remote_kubectl_stops_when_requested_cluster_does_not_exist(
+    tmp_path: Path,
+):
+    artifacts = configured_artifacts(tmp_path)
+    az = Mock(os_artifacts=artifacts)
+    az.refresh_aks_credentials.return_value = False
+
+    assert remote._initialize_kubectl(az) is None
+    artifacts.get_kube_context.assert_not_called()
+
 
 def test_private_file_is_atomically_replaced_with_private_permissions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -190,16 +203,18 @@ def test_remote_status_recovers_token_from_cluster(
 
 
 def test_remote_status_stops_when_requested_cluster_does_not_exist(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    tmp_path: Path,
 ):
     artifacts = configured_artifacts(tmp_path)
-    az = Mock(cluster_name="cluster", resource_group="group")
+    az = Mock(
+        cluster_name="cluster",
+        resource_group="group",
+        os_artifacts=artifacts,
+    )
     az.refresh_aks_credentials.return_value = False
-    initialize = Mock()
-    monkeypatch.setattr(remote, "_initialize_kubectl", initialize)
 
     assert remote.status(artifacts, az, "public") is False
-    initialize.assert_not_called()
+    artifacts.get_kube_context.assert_not_called()
 
 
 def test_remote_status_keeps_previous_pair_when_url_discovery_fails(
