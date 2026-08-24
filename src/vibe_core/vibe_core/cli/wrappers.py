@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from functools import partialmethod
 from pathlib import Path, PureWindowsPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -198,6 +198,7 @@ class TerraformWrapper:
         variables: Dict[str, str],
         cluster_name: str,
         kubernetes_config_context: str,
+        on_destroy: Optional[Callable[[], None]] = None,
     ) -> None:
         legacy = [
             resource
@@ -207,6 +208,8 @@ class TerraformWrapper:
         if not legacy:
             log("No legacy Helm service releases found", level="debug")
         else:
+            if on_destroy is not None:
+                on_destroy()
             self.destroy(working_directory, state_file, variables, targets=legacy)
         KubectlWrapper(
             self.os_artifacts,
@@ -431,6 +434,7 @@ class TerraformWrapper:
         enable_telemetry: bool,
         cleanup_state: bool = False,
         migrate_legacy_services: bool = False,
+        on_legacy_destroy: Optional[Callable[[], None]] = None,
     ):
         # Do kubernetes infra now
         kubernetes_directory = os.path.join(
@@ -483,6 +487,7 @@ class TerraformWrapper:
                 variables,
                 cluster_name,
                 kubernetes_config_context,
+                on_legacy_destroy,
             )
         self.apply(kubernetes_directory, state_file, variables)
 

@@ -445,6 +445,13 @@ def setup_or_upgrade(
                     return False
 
             migration_backup: Optional[Path] = None
+            previous_replicas: Optional[Dict[str, int]] = None
+            migration_started = False
+
+            def mark_migration_started() -> None:
+                nonlocal migration_started
+                migration_started = True
+
             if is_update:
                 migration_backup = remote_redis_migration_backup(
                     os_artifacts,
@@ -475,32 +482,38 @@ def setup_or_upgrade(
                 if migration_backup.exists() and migration_backup.stat().st_size == 0:
                     raise RuntimeError("Redis migration backup is empty")
 
-            k8s_results = terraform.ensure_k8s_cluster(
-                az.cluster_name,
-                tenant_id,
-                registry_path,
-                registry_username,
-                registry_password,
-                az.resource_group,
-                current_user_name,
-                certificate_email,
-                infra_results["kubernetes_config_context"]["value"],
-                infra_results["public_ip_address"]["value"],
-                infra_results["public_ip_fqdn"]["value"],
-                infra_results["public_ip_dns"]["value"],
-                infra_results["keyvault_name"]["value"],
-                infra_results["application_id"]["value"],
-                infra_results["storage_connection_key"]["value"],
-                infra_results["storage_account_name"]["value"],
-                infra_results["userfile_container_name"]["value"],
-                infra_results["monitor_instrumentation_key"]["value"],
-                storage_name,
-                container_name,
-                storage_access_key,
-                enable_telemetry,
-                cleanup_state=True,
-                migrate_legacy_services=is_update,
-            )
+            try:
+                k8s_results = terraform.ensure_k8s_cluster(
+                    az.cluster_name,
+                    tenant_id,
+                    registry_path,
+                    registry_username,
+                    registry_password,
+                    az.resource_group,
+                    current_user_name,
+                    certificate_email,
+                    infra_results["kubernetes_config_context"]["value"],
+                    infra_results["public_ip_address"]["value"],
+                    infra_results["public_ip_fqdn"]["value"],
+                    infra_results["public_ip_dns"]["value"],
+                    infra_results["keyvault_name"]["value"],
+                    infra_results["application_id"]["value"],
+                    infra_results["storage_connection_key"]["value"],
+                    infra_results["storage_account_name"]["value"],
+                    infra_results["userfile_container_name"]["value"],
+                    infra_results["monitor_instrumentation_key"]["value"],
+                    storage_name,
+                    container_name,
+                    storage_access_key,
+                    enable_telemetry,
+                    cleanup_state=True,
+                    migrate_legacy_services=is_update,
+                    on_legacy_destroy=mark_migration_started,
+                )
+            except Exception:
+                if previous_replicas is not None and not migration_started:
+                    restore_remote_services(kubectl, previous_replicas)
+                raise
             if migration_backup is not None and migration_backup.exists():
                 if not restore_redis_data(
                     kubectl,

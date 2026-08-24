@@ -535,6 +535,48 @@ def test_migration_backup_failure_restores_quiesced_services(
     terraform.ensure_k8s_cluster.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "takeover_started, restore_expected",
+    [(False, True), (True, False)],
+)
+def test_migration_failure_restores_only_before_native_takeover(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    takeover_started: bool,
+    restore_expected: bool,
+):
+    artifacts, az, terraform, kubectl, _ = configured_update(
+        monkeypatch, tmp_path, None
+    )
+    replicas = {"terravibes-rest-api": 1}
+    migration_backup = remote.remote_redis_migration_backup(
+        artifacts, az, "subscription", "cluster-uid"
+    )
+    monkeypatch.setattr(remote, "needs_service_migration", Mock(return_value=True))
+    monkeypatch.setattr(
+        remote, "quiesce_remote_services", Mock(return_value=replicas)
+    )
+
+    def backup(*args: Any, **kwargs: Any) -> bool:
+        migration_backup.write_bytes(b"redis-state")
+        return True
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        if takeover_started:
+            kwargs["on_legacy_destroy"]()
+        raise RuntimeError("terraform failed")
+
+    restore = Mock()
+    monkeypatch.setattr(remote, "backup_redis_data", backup)
+    monkeypatch.setattr(remote, "restore_remote_services", restore)
+    terraform.ensure_k8s_cluster.side_effect = fail
+
+    assert run_update(artifacts, az) is False
+    assert restore.called is restore_expected
+    if restore_expected:
+        restore.assert_called_once_with(kubectl, replicas)
+
+
 def test_quiesce_remote_services_preserves_replica_counts() -> None:
     kubectl = Mock(spec=KubectlWrapper)
     kubectl.get_or_none.side_effect = lambda kind, name: (

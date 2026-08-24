@@ -195,6 +195,7 @@ def test_legacy_service_charts_are_destroyed_before_rabbitmq_pvc_reset() -> None
         return_value=["helm_release.redis", "helm_release.rabbitmq"]
     )
     terraform.destroy = Mock()
+    on_destroy = Mock()
 
     with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl:
         terraform.destroy_legacy_service_charts(
@@ -203,8 +204,10 @@ def test_legacy_service_charts_are_destroyed_before_rabbitmq_pvc_reset() -> None
             {"namespace": "default"},
             "cluster",
             "cluster-admin",
+            on_destroy,
         )
 
+    on_destroy.assert_called_once_with()
     terraform.destroy.assert_called_once_with(
         "/terraform",
         "state.tfstate",
