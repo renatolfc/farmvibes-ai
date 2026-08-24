@@ -446,13 +446,8 @@ class TerraformWrapper:
         cleanup_state: bool = False,
     ):
         services_directory = os.path.join(self.os_artifacts.aks_directory, "..", "services")
-        backend_config = {
-            "config_path": kubernetes_config_path,
-            "config_context": kubernetes_config_context,
-        }
         self.init(
             services_directory,
-            backend_config=backend_config,
             cleanup_state=cleanup_state,
             refresh_creds=True,
         )

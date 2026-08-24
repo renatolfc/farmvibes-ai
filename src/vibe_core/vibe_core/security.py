@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+"""Shared security helpers for FarmVibes.AI clients and services."""
 
 import os
 from copy import deepcopy
@@ -29,7 +30,6 @@ _SENSITIVE_KEYS = (
 
 def get_farmvibes_config_dir() -> Path:
     """Resolve the configuration directory shared by the CLI and client."""
-
     if configured := os.getenv("FARMVIBES_AI_CONFIG_DIR"):
         return Path(configured).expanduser()
     if xdg_config_home := os.getenv("XDG_CONFIG_HOME"):
@@ -49,7 +49,6 @@ def _is_sensitive_key(key: str) -> bool:
 
 def redact_sensitive(value: Any) -> Any:
     """Return a copy with values under sensitive keys redacted recursively."""
-
     if isinstance(value, dict):
         return {
             deepcopy(key): (

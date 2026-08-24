@@ -1090,7 +1090,6 @@ def get_remote_service_url() -> str:
 
 def get_remote_api_token() -> Optional[str]:
     """Get the remote API token if one has been configured."""
-
     try:
         with open(FARMVIBES_AI_REMOTE_API_TOKEN_PATH, "r") as fp:
             return fp.read().strip() or None

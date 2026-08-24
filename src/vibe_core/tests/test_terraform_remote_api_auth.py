@@ -53,3 +53,16 @@ def test_remote_services_use_pinned_native_images():
     assert 'resource "helm_release"' not in redis + rabbitmq
     assert "image             = var.redis_image" in redis
     assert "image             = var.rabbitmq_image" in rabbitmq
+
+    providers = (
+        terraform / "aks" / "modules" / "kubernetes" / "providers.tf"
+    ).read_text()
+    assert 'source  = "hashicorp/random"' in providers
+    assert 'provider "helm"' not in (
+        terraform / "services" / "providers.tf"
+    ).read_text()
+
+    ensure_services = wrappers.split("def ensure_services(", 1)[1].split(
+        "def ensure_local_cluster(", 1
+    )[0]
+    assert "backend_config" not in ensure_services

@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 from vibe_core.cli import remote
@@ -39,9 +40,9 @@ def test_refresh_aks_credentials_uses_private_admin_kubeconfig(
     az = AzureCliWrapper(artifacts, "cluster", "resource-group")
     az.refresh_az_creds = Mock()
     az.cluster_exists = Mock(return_value=True)
-    commands = []
+    commands: list[list[str]] = []
 
-    def execute(command, *args, **kwargs):
+    def execute(command: list[str], *args: Any, **kwargs: Any) -> str:
         commands.append(command)
         kubeconfig.touch()
         return ""
