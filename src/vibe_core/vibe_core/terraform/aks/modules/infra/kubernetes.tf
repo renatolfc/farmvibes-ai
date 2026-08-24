@@ -11,6 +11,7 @@ resource "azurerm_kubernetes_cluster" "kubernetes" {
   resource_group_name       = var.resource_group_name
   dns_prefix                = "${var.prefix}kbsdns"
   automatic_channel_upgrade = "patch"
+  oidc_issuer_enabled       = true
 
   identity {
     type = "SystemAssigned"

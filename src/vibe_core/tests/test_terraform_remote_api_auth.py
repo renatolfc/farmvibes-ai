@@ -67,3 +67,17 @@ def test_remote_services_use_pinned_native_images():
         "def ensure_local_cluster(", 1
     )[0]
     assert "backend_config=backend_config" in ensure_services
+
+
+def test_remote_aks_keeps_required_oidc_issuer_enabled():
+    terraform = (
+        Path(__file__).parents[1]
+        / "vibe_core"
+        / "terraform"
+        / "aks"
+        / "modules"
+        / "infra"
+        / "kubernetes.tf"
+    ).read_text()
+
+    assert "oidc_issuer_enabled        = true" in terraform
