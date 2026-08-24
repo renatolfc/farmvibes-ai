@@ -58,10 +58,16 @@ def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
 
 
 def remote_redis_migration_backup(
-    os_artifacts: OSArtifacts, az: AzureCliWrapper
+    os_artifacts: OSArtifacts,
+    az: AzureCliWrapper,
+    subscription_id: str,
+    cluster_uid: str,
 ) -> Path:
     scope = hashlib.sha256(
-        f"{az.cluster_name}\0{az.resource_group}".encode()
+        (
+            f"{subscription_id}\0{az.cluster_name}\0"
+            f"{az.resource_group}\0{cluster_uid}"
+        ).encode()
     ).hexdigest()[:16]
     return (
         Path(os_artifacts.private_config_dir)
@@ -212,7 +218,8 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
         return False
 
     log("Refreshing AKS credentials...", level="debug")
-    az.refresh_aks_credentials()
+    if az.refresh_aks_credentials() is False:
+        return False
     terraform = TerraformWrapper(os_artifacts, az, environment=environment)
     kubectl = _initialize_kubectl(az)
     if not kubectl:
@@ -407,7 +414,12 @@ def setup_or_upgrade(
 
             migration_backup: Optional[Path] = None
             if is_update:
-                migration_backup = remote_redis_migration_backup(os_artifacts, az)
+                migration_backup = remote_redis_migration_backup(
+                    os_artifacts,
+                    az,
+                    subscription_id,
+                    kubectl.get_cluster_uid(),
+                )
                 if needs_service_migration(kubectl):
                     log(
                         "Migrating Helm services to native resources. Redis state will "
@@ -481,12 +493,12 @@ def setup_or_upgrade(
             )
 
             with kubectl.context(kubectl.cluster_name):
-                if pending_rotation is not None:
-                    activate_remote_api_token(kubectl, *pending_rotation)
                 if is_update:
                     log("remote cluster updated, restarting services")
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
                     kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
+                if pending_rotation is not None:
+                    activate_remote_api_token(kubectl, *pending_rotation)
 
     except Exception as e:
         log(f"{e.__class__.__name__}: {e}")

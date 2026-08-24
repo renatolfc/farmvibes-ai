@@ -110,10 +110,16 @@ def test_redis_migration_backup_is_cluster_scoped(tmp_path: Path):
     artifacts = configured_artifacts(tmp_path)
 
     first = remote.remote_redis_migration_backup(
-        artifacts, Mock(cluster_name="first", resource_group="group")
+        artifacts,
+        Mock(cluster_name="cluster", resource_group="group"),
+        "subscription",
+        "first-uid",
     )
     second = remote.remote_redis_migration_backup(
-        artifacts, Mock(cluster_name="second", resource_group="group")
+        artifacts,
+        Mock(cluster_name="cluster", resource_group="group"),
+        "subscription",
+        "second-uid",
     )
 
     assert first != second
@@ -181,6 +187,19 @@ def test_remote_status_recovers_token_from_cluster(
     url_path = tmp_path / "remote_service_url"
     assert url_path.read_text() == "https://example.test"
     assert url_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_remote_status_stops_when_requested_cluster_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts = configured_artifacts(tmp_path)
+    az = Mock(cluster_name="cluster", resource_group="group")
+    az.refresh_aks_credentials.return_value = False
+    initialize = Mock()
+    monkeypatch.setattr(remote, "_initialize_kubectl", initialize)
+
+    assert remote.status(artifacts, az, "public") is False
+    initialize.assert_not_called()
 
 
 def test_remote_status_keeps_previous_pair_when_url_discovery_fails(
@@ -345,6 +364,7 @@ def configured_update(
     kubectl.cluster_name = "cluster"
     kubectl.os_artifacts = artifacts
     kubectl.context.return_value = nullcontext()
+    kubectl.get_cluster_uid.return_value = "cluster-uid"
     dapr = Mock()
     dapr.needs_upgrade.return_value = False
 
@@ -372,7 +392,9 @@ def test_update_orders_helm_migration(
     artifacts, az, terraform, _, _ = configured_update(
         monkeypatch, tmp_path, None
     )
-    migration_backup = remote.remote_redis_migration_backup(artifacts, az)
+    migration_backup = remote.remote_redis_migration_backup(
+        artifacts, az, "subscription", "cluster-uid"
+    )
     migration_backup.write_bytes(b"stale-state")
     order = []
 
@@ -406,7 +428,9 @@ def test_update_resumes_pending_redis_restore(
     tmp_path: Path,
 ):
     artifacts, az, _, _, _ = configured_update(monkeypatch, tmp_path, None)
-    migration_backup = remote.remote_redis_migration_backup(artifacts, az)
+    migration_backup = remote.remote_redis_migration_backup(
+        artifacts, az, "subscription", "cluster-uid"
+    )
     migration_backup.write_bytes(b"redis-state")
     backup = Mock()
     restore = Mock(return_value=True)
@@ -424,7 +448,9 @@ def test_update_rejects_empty_redis_migration_backup(
     tmp_path: Path,
 ):
     artifacts, az, terraform, _, _ = configured_update(monkeypatch, tmp_path, None)
-    migration_backup = remote.remote_redis_migration_backup(artifacts, az)
+    migration_backup = remote.remote_redis_migration_backup(
+        artifacts, az, "subscription", "cluster-uid"
+    )
     migration_backup.touch()
 
     assert run_update(artifacts, az) is False
@@ -480,10 +506,11 @@ def test_rotation_is_applied_after_services(
     terraform.ensure_services.side_effect = lambda *args, **kwargs: order.append(
         "services"
     )
+    kubectl.restart.side_effect = lambda *args, **kwargs: order.append("restart")
     activation.side_effect = lambda *args: order.append("rotate")
 
     assert run_update(artifacts, az, rotate=True) is True
-    assert order == ["services", "rotate"]
+    assert order == ["services", "restart", "rotate"]
     prepare.assert_called_once_with(kubectl, True)
     activation.assert_called_once_with(kubectl, "old", "new")
     kubectl.restart.assert_called_once_with(
@@ -503,6 +530,20 @@ def test_rotation_does_not_change_token_when_services_fail(
     activation = Mock()
     monkeypatch.setattr(remote, "activate_remote_api_token", activation)
     terraform.ensure_services.side_effect = RuntimeError("services failed")
+
+    assert run_update(artifacts, az, rotate=True) is False
+    activation.assert_not_called()
+
+
+def test_rotation_does_not_activate_before_general_restart_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, az, _, kubectl, _ = configured_update(
+        monkeypatch, tmp_path, ("old", "new")
+    )
+    activation = Mock()
+    monkeypatch.setattr(remote, "activate_remote_api_token", activation)
+    kubectl.restart.side_effect = RuntimeError("restart failed")
 
     assert run_update(artifacts, az, rotate=True) is False
     activation.assert_not_called()
