@@ -446,7 +446,7 @@ def test_update_resumes_pending_redis_restore(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    artifacts, az, _, _, _ = configured_update(monkeypatch, tmp_path, None)
+    artifacts, az, _, kubectl, _ = configured_update(monkeypatch, tmp_path, None)
     migration_backup = remote.remote_redis_migration_backup(
         artifacts, az, "subscription", "cluster-uid"
     )
@@ -459,6 +459,30 @@ def test_update_resumes_pending_redis_restore(
     assert run_update(artifacts, az) is True
     backup.assert_not_called()
     restore.assert_called_once()
+    assert not migration_backup.exists()
+
+
+def test_partial_helm_destroy_reuses_existing_redis_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    artifacts, az, _, kubectl, _ = configured_update(monkeypatch, tmp_path, None)
+    migration_backup = remote.remote_redis_migration_backup(
+        artifacts, az, "subscription", "cluster-uid"
+    )
+    migration_backup.write_bytes(b"redis-state")
+    needs_migration = Mock(side_effect=[True, False])
+    backup = Mock()
+    monkeypatch.setattr(remote, "needs_service_migration", needs_migration)
+    monkeypatch.setattr(remote, "backup_redis_data", backup)
+
+    assert run_update(artifacts, az) is True
+    backup.assert_not_called()
+    assert needs_migration.call_args_list[0].args == (kubectl,)
+    assert needs_migration.call_args_list[1].args == (
+        kubectl,
+        ("redis-master",),
+    )
     assert not migration_backup.exists()
 
 
@@ -651,6 +675,21 @@ def test_rotation_does_not_activate_before_general_restart_succeeds(
 
     assert run_update(artifacts, az, rotate=True) is False
     activation.assert_not_called()
+
+
+def test_rotation_rolls_back_when_final_status_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, az, _, kubectl, _ = configured_update(
+        monkeypatch, tmp_path, ("old", "new")
+    )
+    activation = Mock()
+    monkeypatch.setattr(remote, "activate_remote_api_token", activation)
+    remote.status.return_value = False
+
+    assert run_update(artifacts, az, rotate=True) is False
+    assert activation.call_args_list[0].args == (kubectl, "old", "new")
+    assert activation.call_args_list[1].args == (kubectl, "new", "old")
 
 
 @pytest.mark.parametrize("failure", ["restart", "rollout"])

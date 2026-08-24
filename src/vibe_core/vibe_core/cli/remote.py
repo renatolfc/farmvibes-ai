@@ -460,24 +460,35 @@ def setup_or_upgrade(
                     kubectl.get_cluster_uid(),
                 )
                 if needs_service_migration(kubectl):
+                    legacy_redis = needs_service_migration(
+                        kubectl, ("redis-master",)
+                    )
+                    if not legacy_redis:
+                        migration_started = True
                     log(
                         "Migrating Helm services to native resources. Redis state will "
                         "be preserved; transient RabbitMQ queues will be reset."
                     )
                     previous_replicas = quiesce_remote_services(kubectl)
                     try:
-                        if not backup_redis_data(
-                            kubectl,
-                            str(migration_backup.parent),
-                            dump_file=migration_backup.name,
-                            require_backup=True,
-                        ):
+                        if legacy_redis:
+                            if not backup_redis_data(
+                                kubectl,
+                                str(migration_backup.parent),
+                                dump_file=migration_backup.name,
+                                require_backup=True,
+                            ):
+                                raise RuntimeError(
+                                    "Unable to back up Redis before service migration"
+                                )
+                        elif not migration_backup.exists():
                             raise RuntimeError(
-                                "Unable to back up Redis before service migration"
+                                "Legacy Redis was removed without a migration backup"
                             )
                         secure_path(migration_backup, 0o600)
                     except Exception:
-                        restore_remote_services(kubectl, previous_replicas)
+                        if not migration_started:
+                            restore_remote_services(kubectl, previous_replicas)
                         raise
                 if migration_backup.exists() and migration_backup.stat().st_size == 0:
                     raise RuntimeError("Redis migration backup is empty")
@@ -575,7 +586,21 @@ def setup_or_upgrade(
                 )
         return False
 
-    return status(os_artifacts, az, environment)
+    try:
+        succeeded = status(os_artifacts, az, environment)
+    except Exception:
+        if pending_rotation is not None:
+            with kubectl.context(kubectl.cluster_name):
+                activate_remote_api_token(
+                    kubectl, pending_rotation[1], pending_rotation[0]
+                )
+        raise
+    if not succeeded and pending_rotation is not None:
+        with kubectl.context(kubectl.cluster_name):
+            activate_remote_api_token(
+                kubectl, pending_rotation[1], pending_rotation[0]
+            )
+    return succeeded
 
 
 def add_onnx(os_artifacts: OSArtifacts, az: AzureCliWrapper, file_to_upload: str, environment: str):
