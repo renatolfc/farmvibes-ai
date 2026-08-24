@@ -238,8 +238,6 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
         return False
 
     url = url.replace('"', "")
-    persist_remote_api_config(os_artifacts, url, token)
-
     log(f"URL for your AKS Cluster is: {url}")
     if failed:
         log(
@@ -249,6 +247,8 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
             "`farmvibes-ai remote update`.",
             level="warning",
         )
+        return False
+    persist_remote_api_config(os_artifacts, url, token)
     return True
 
 

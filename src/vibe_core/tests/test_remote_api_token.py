@@ -206,6 +206,29 @@ def test_remote_status_keeps_previous_pair_when_url_discovery_fails(
     assert url_path.read_text() == "https://old.test"
 
 
+def test_remote_status_does_not_persist_terraform_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts = configured_artifacts(tmp_path)
+    artifacts.config_file.side_effect = lambda name: str(tmp_path / name)
+    token_path = artifacts.private_config_dir / "remote_api_token"
+    url_path = tmp_path / "remote_service_url"
+    token_path.write_text("old-token")
+    url_path.write_text("https://old.test")
+    az = Mock(cluster_name="cluster", resource_group="group")
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.get_secret_or_none.return_value = encoded_secret("new-token")
+    kubectl.url_from_ingress.return_value = None
+    terraform = Mock()
+    terraform.get_url_from_terraform_output.return_value = "https://stale.test"
+    monkeypatch.setattr(remote, "TerraformWrapper", Mock(return_value=terraform))
+    monkeypatch.setattr(remote, "_initialize_kubectl", Mock(return_value=kubectl))
+
+    assert remote.status(artifacts, az, "public") is False
+    assert token_path.read_text() == "old-token"
+    assert url_path.read_text() == "https://old.test"
+
+
 def test_remote_config_update_restores_previous_pair_on_write_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
