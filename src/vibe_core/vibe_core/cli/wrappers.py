@@ -120,16 +120,22 @@ class TerraformWrapper:
         variables: Dict[str, str],
         refresh_creds: bool = True,
         plan: bool = False,
+        destroy: bool = False,
         plan_file: str = "",
+        targets: Optional[List[str]] = None,
     ):
         if refresh_creds:
             assert self.az is not None, "AzureCliWrapper must be provided to refresh credentials"
             self.az.refresh_az_creds()
-        log(f"{'Planning' if plan else 'Applying'} terraform in {working_directory}")
+        action = "plan" if plan else "destroy" if destroy else "apply"
+        log(
+            f"{'Planning' if plan else 'Destroying' if destroy else 'Applying'} "
+            f"terraform in {working_directory}"
+        )
         command = [
             self.os_artifacts.terraform,
             f"-chdir={working_directory}",
-            "plan" if plan else "apply",
+            action,
             f"-state={state_file}",
         ]
         env_vars = {"TF_PLUGIN_CACHE_DIR": self.PLUGIN_CACHE_DIR}
@@ -146,13 +152,14 @@ class TerraformWrapper:
                     v = v.replace("\\", "/")
                 command += ["-var", f"{k}={v}"]
             command += ["-var", f"environment={self.environment}"]
+        command += [f"-target={target}" for target in targets or []]
         env_vars["ARM_ENVIRONMENT"] = self.environment
         stdout = execute_cmd(
             command,
             check_return_code=True,
             check_empty_result=False,
             error_string=(
-                f"Failed to {'plan' if plan else 'apply'} terraform resources "
+                f"Failed to {action} terraform resources "
                 f"in {working_directory}"
             ),
             capture_output=True,
@@ -162,6 +169,50 @@ class TerraformWrapper:
 
     plan = partialmethod(_plan_or_apply, plan=True)
     apply = partialmethod(_plan_or_apply, plan=False)
+    destroy = partialmethod(_plan_or_apply, destroy=True)
+
+    def state_resources(self, working_directory: str, state_file: str) -> List[str]:
+        output = execute_cmd(
+            [
+                self.os_artifacts.terraform,
+                f"-chdir={working_directory}",
+                "state",
+                "list",
+                f"-state={state_file}",
+            ],
+            check_return_code=True,
+            check_empty_result=False,
+            error_string=f"Failed to list terraform state in {working_directory}",
+            capture_output=True,
+            env_vars={
+                "ARM_ENVIRONMENT": self.environment,
+                "TF_PLUGIN_CACHE_DIR": self.PLUGIN_CACHE_DIR,
+            },
+        )
+        return output.splitlines()
+
+    def destroy_legacy_service_charts(
+        self,
+        working_directory: str,
+        state_file: str,
+        variables: Dict[str, str],
+        cluster_name: str,
+        kubernetes_config_context: str,
+    ) -> None:
+        legacy = [
+            resource
+            for resource in ("helm_release.redis", "helm_release.rabbitmq")
+            if resource in self.state_resources(working_directory, state_file)
+        ]
+        if not legacy:
+            log("No legacy Helm service releases found", level="debug")
+        else:
+            self.destroy(working_directory, state_file, variables, targets=legacy)
+        KubectlWrapper(
+            self.os_artifacts,
+            cluster_name,
+            config_context=kubernetes_config_context,
+        ).delete("pvc", "data-rabbitmq-0", ignore_not_found=True)
 
     def get_output(
         self,
@@ -379,6 +430,7 @@ class TerraformWrapper:
         backend_storage_access_key: str,
         enable_telemetry: bool,
         cleanup_state: bool = False,
+        migrate_legacy_services: bool = False,
     ):
         # Do kubernetes infra now
         kubernetes_directory = os.path.join(
@@ -424,6 +476,14 @@ class TerraformWrapper:
         state_file = self.os_artifacts.get_terraform_file(
             "kubernetes.tfstate", cluster_name, resource_group
         )
+        if migrate_legacy_services:
+            self.destroy_legacy_service_charts(
+                kubernetes_directory,
+                state_file,
+                variables,
+                cluster_name,
+                kubernetes_config_context,
+            )
         self.apply(kubernetes_directory, state_file, variables)
 
         return self.get_output(kubernetes_directory, state_file)

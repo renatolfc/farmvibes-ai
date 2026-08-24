@@ -306,6 +306,7 @@ class OSArtifacts:
         if not ret.exists():
             log(f"Creating config directory {ret}")
             ret.mkdir(exist_ok=True, parents=True)
+        secure_path(ret, 0o700)
         return ret
 
     @property

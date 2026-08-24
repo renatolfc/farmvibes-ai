@@ -317,6 +317,10 @@ farmvibes-ai remote update \
   --resource-group some-resource-group-name
 ```
 
+The first update from the legacy Helm services stops those workloads, preserves and restores Redis
+workflow state, and resets transient RabbitMQ queues before installing the native services. Do not
+run this migration while workflows are active. A failed Redis restore is retried by the next update.
+
 An authorized operator can recover a missing local token file by running `farmvibes-ai remote
 status`. Rotate a token by adding `--rotate-api-token` to `remote update`; this invalidates clients
 using the old token and restarts the REST API deployment.

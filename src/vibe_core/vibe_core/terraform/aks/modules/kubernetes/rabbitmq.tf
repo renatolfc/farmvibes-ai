@@ -169,7 +169,7 @@ resource "kubernetes_stateful_set" "rabbitmq" {
           }
 
           volume_mount {
-            name       = "data"
+            name       = "rabbitmq-data"
             mount_path = "/var/lib/rabbitmq"
           }
 
@@ -209,7 +209,7 @@ resource "kubernetes_stateful_set" "rabbitmq" {
 
     volume_claim_template {
       metadata {
-        name = "data"
+        name = "rabbitmq-data"
       }
 
       spec {

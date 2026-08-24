@@ -14,7 +14,7 @@ from vibe_core.cli.osartifacts import (
     github_api_headers,
     secure_path,
 )
-from vibe_core.cli.wrappers import AzureCliWrapper
+from vibe_core.cli.wrappers import AzureCliWrapper, TerraformWrapper
 
 
 def test_get_storage_account_key_accepts_wrapped_azure_cli_response() -> None:
@@ -130,3 +130,42 @@ def test_github_api_headers_use_actions_token(
 
     monkeypatch.setenv("GITHUB_TOKEN", "actions-token")
     assert github_api_headers() == {"Authorization": "Bearer actions-token"}
+
+
+def test_config_directory_is_owner_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "config"
+    path.mkdir(mode=0o777)
+    monkeypatch.setenv("FARMVIBES_AI_CONFIG_DIR", str(path))
+
+    assert OSArtifacts().config_dir == path
+    assert path.stat().st_mode & 0o777 == 0o700
+
+
+def test_legacy_service_charts_are_destroyed_before_rabbitmq_pvc_reset() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    terraform = TerraformWrapper(artifacts)
+    terraform.state_resources = Mock(
+        return_value=["helm_release.redis", "helm_release.rabbitmq"]
+    )
+    terraform.destroy = Mock()
+
+    with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl:
+        terraform.destroy_legacy_service_charts(
+            "/terraform",
+            "state.tfstate",
+            {"namespace": "default"},
+            "cluster",
+            "cluster-admin",
+        )
+
+    terraform.destroy.assert_called_once_with(
+        "/terraform",
+        "state.tfstate",
+        {"namespace": "default"},
+        targets=["helm_release.redis", "helm_release.rabbitmq"],
+    )
+    kubectl.return_value.delete.assert_called_once_with(
+        "pvc", "data-rabbitmq-0", ignore_not_found=True
+    )

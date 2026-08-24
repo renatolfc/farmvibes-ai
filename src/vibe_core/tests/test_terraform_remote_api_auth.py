@@ -53,6 +53,7 @@ def test_remote_services_use_pinned_native_images():
     assert 'resource "helm_release"' not in redis + rabbitmq
     assert "image             = var.redis_image" in redis
     assert "image             = var.rabbitmq_image" in rabbitmq
+    assert 'name = "rabbitmq-data"' in rabbitmq
 
     providers = (
         terraform / "aks" / "modules" / "kubernetes" / "providers.tf"

@@ -97,6 +97,31 @@ def test_token_create_and_recover(tmp_path: Path):
     ).read_text() == "cluster-token"
 
 
+def test_invalid_token_secret_is_replaced(tmp_path: Path):
+    artifacts = configured_artifacts(tmp_path)
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.get_secret_or_none.return_value = {"data": {"token": "not-base64!"}}
+
+    assert remote.ensure_remote_api_token(artifacts, kubectl) is True
+    token = kubectl.upsert_opaque_secret.call_args.args[1]["token"]
+    assert token
+    assert (artifacts.private_config_dir / "remote_api_token").read_text() == token
+
+
+def test_redis_migration_backup_is_cluster_scoped(tmp_path: Path):
+    artifacts = configured_artifacts(tmp_path)
+
+    first = remote.remote_redis_migration_backup(
+        artifacts, Mock(cluster_name="first", resource_group="group")
+    )
+    second = remote.remote_redis_migration_backup(
+        artifacts, Mock(cluster_name="second", resource_group="group")
+    )
+
+    assert first != second
+    assert first.parent == artifacts.private_config_dir
+
+
 def test_remote_kubectl_uses_managed_kubeconfig(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -155,6 +180,9 @@ def test_remote_status_recovers_token_from_cluster(
     assert (
         artifacts.private_config_dir / "remote_api_token"
     ).read_text() == "recovered"
+    url_path = tmp_path / "remote_service_url"
+    assert url_path.read_text() == "https://example.test"
+    assert url_path.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize(
@@ -250,6 +278,9 @@ def configured_update(
     monkeypatch.setattr(remote, "_initialize_kubectl", Mock(return_value=kubectl))
     monkeypatch.setattr(remote, "DaprWrapper", Mock(return_value=dapr))
     monkeypatch.setattr(remote, "status", Mock(return_value=True))
+    monkeypatch.setattr(remote, "needs_service_migration", Mock(return_value=False))
+    monkeypatch.setattr(remote, "backup_redis_data", Mock(return_value=True))
+    monkeypatch.setattr(remote, "restore_redis_data", Mock(return_value=True))
     token = (
         Mock(side_effect=token_changed)
         if isinstance(token_changed, Exception)
@@ -258,6 +289,72 @@ def configured_update(
     monkeypatch.setattr(remote, "prepare_remote_api_token", token)
     monkeypatch.setattr(remote, "activate_remote_api_token", Mock())
     return artifacts, az, terraform, kubectl, token
+
+
+def test_update_orders_helm_migration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    artifacts, az, terraform, _, _ = configured_update(
+        monkeypatch, tmp_path, None
+    )
+    migration_backup = remote.remote_redis_migration_backup(artifacts, az)
+    migration_backup.write_bytes(b"stale-state")
+    order = []
+
+    def backup(*args: Any, **kwargs: Any) -> bool:
+        order.append("backup")
+        migration_backup.write_bytes(b"redis-state")
+        return True
+
+    k8s_results = terraform.ensure_k8s_cluster.return_value
+    terraform.ensure_k8s_cluster.side_effect = (
+        lambda *args, **kwargs: order.append("native") or k8s_results
+    )
+    monkeypatch.setattr(remote, "needs_service_migration", Mock(return_value=True))
+    monkeypatch.setattr(remote, "backup_redis_data", backup)
+    monkeypatch.setattr(
+        remote,
+        "restore_redis_data",
+        lambda *args, **kwargs: order.append("restore") or True,
+    )
+
+    assert run_update(artifacts, az) is True
+    assert order == ["backup", "native", "restore"]
+    assert terraform.ensure_k8s_cluster.call_args.kwargs[
+        "migrate_legacy_services"
+    ] is True
+    assert not migration_backup.exists()
+
+
+def test_update_resumes_pending_redis_restore(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    artifacts, az, _, _, _ = configured_update(monkeypatch, tmp_path, None)
+    migration_backup = remote.remote_redis_migration_backup(artifacts, az)
+    migration_backup.write_bytes(b"redis-state")
+    backup = Mock()
+    restore = Mock(return_value=True)
+    monkeypatch.setattr(remote, "backup_redis_data", backup)
+    monkeypatch.setattr(remote, "restore_redis_data", restore)
+
+    assert run_update(artifacts, az) is True
+    backup.assert_not_called()
+    restore.assert_called_once()
+    assert not migration_backup.exists()
+
+
+def test_update_rejects_empty_redis_migration_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    artifacts, az, terraform, _, _ = configured_update(monkeypatch, tmp_path, None)
+    migration_backup = remote.remote_redis_migration_backup(artifacts, az)
+    migration_backup.touch()
+
+    assert run_update(artifacts, az) is False
+    terraform.ensure_k8s_cluster.assert_not_called()
 
 
 def test_update_provisions_before_services_and_restarts_services(

@@ -4,6 +4,7 @@
 import argparse
 import base64
 import binascii
+import hashlib
 import os
 import secrets
 import tempfile
@@ -11,8 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from vibe_core.cli import helper
-from vibe_core.cli.constants import AZURE_CR_DOMAIN, MAX_WORKER_NODES, REMOTE_SERVICE_URL_PATH_FILE
+from vibe_core.cli.constants import (
+    AZURE_CR_DOMAIN,
+    MAX_WORKER_NODES,
+    REDIS_IMAGE,
+    REMOTE_SERVICE_URL_PATH_FILE,
+)
 from vibe_core.cli.helper import in_wsl, log_should_be_logged_in, verify_to_proceed
+from vibe_core.cli.local import backup_redis_data, needs_service_migration, restore_redis_data
 from vibe_core.cli.logging import ColorFormatter, log
 from vibe_core.cli.osartifacts import OSArtifacts, secure_path
 from vibe_core.cli.wrappers import AzureCliWrapper, DaprWrapper, KubectlWrapper, TerraformWrapper
@@ -36,6 +43,7 @@ DESTROY_WARNING = (
     "Do you wish to proceed? (Answering 'y' will wipe the resource group)"
 )
 REST_API_DEPLOYMENT = "terravibes-rest-api"
+REMOTE_REDIS_MIGRATION_BACKUP_PREFIX = "remote-redis-migration"
 
 
 def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
@@ -46,6 +54,18 @@ def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
         return None
     return KubectlWrapper(
         az.os_artifacts, cluster_name=az.cluster_name, config_context=config_context
+    )
+
+
+def remote_redis_migration_backup(
+    os_artifacts: OSArtifacts, az: AzureCliWrapper
+) -> Path:
+    scope = hashlib.sha256(
+        f"{az.cluster_name}\0{az.resource_group}".encode()
+    ).hexdigest()[:16]
+    return (
+        Path(os_artifacts.private_config_dir)
+        / f"{REMOTE_REDIS_MIGRATION_BACKUP_PREFIX}-{scope}.rdb"
     )
 
 
@@ -97,8 +117,15 @@ def ensure_remote_api_token(
         )
         changed = True
     else:
-        token = remote_api_token_from_secret(existing_secret)
-        changed = False
+        try:
+            token = remote_api_token_from_secret(existing_secret)
+            changed = False
+        except ValueError:
+            token = secrets.token_urlsafe(48)
+            kubectl.upsert_opaque_secret(
+                REMOTE_API_AUTH_SECRET, {REMOTE_API_AUTH_TOKEN_KEY: token}
+            )
+            changed = True
     persist_remote_api_token(os_artifacts, token)
     return changed
 
@@ -117,7 +144,11 @@ def prepare_remote_api_token(
     if existing_secret is None:
         ensure_remote_api_token(os_artifacts, kubectl)
         return None
-    old_token = remote_api_token_from_secret(existing_secret)
+    try:
+        old_token = remote_api_token_from_secret(existing_secret)
+    except ValueError:
+        ensure_remote_api_token(os_artifacts, kubectl)
+        return None
     persist_remote_api_token(os_artifacts, old_token)
     return old_token, secrets.token_urlsafe(48)
 
@@ -197,8 +228,10 @@ def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> 
         return False
 
     url = url.replace('"', "")
-    with open(os_artifacts.config_file(REMOTE_SERVICE_URL_PATH_FILE), "w") as f:
+    url_path = Path(os_artifacts.config_file(REMOTE_SERVICE_URL_PATH_FILE))
+    with open(url_path, "w") as f:
         f.write(url)
+    secure_path(url_path, 0o600)
 
     log(f"URL for your AKS Cluster is: {url}")
     if failed:
@@ -365,6 +398,27 @@ def setup_or_upgrade(
                     log("Unable to upgrade Dapr CRDs", level="error")
                     return False
 
+            migration_backup: Optional[Path] = None
+            if is_update:
+                migration_backup = remote_redis_migration_backup(os_artifacts, az)
+                if needs_service_migration(kubectl):
+                    log(
+                        "Migrating Helm services to native resources. Redis state will "
+                        "be preserved; transient RabbitMQ queues will be reset."
+                    )
+                    if not backup_redis_data(
+                        kubectl,
+                        str(migration_backup.parent),
+                        dump_file=migration_backup.name,
+                        require_backup=True,
+                    ):
+                        raise RuntimeError(
+                            "Unable to back up Redis before service migration"
+                        )
+                    secure_path(migration_backup, 0o600)
+                if migration_backup.exists() and migration_backup.stat().st_size == 0:
+                    raise RuntimeError("Redis migration backup is empty")
+
             k8s_results = terraform.ensure_k8s_cluster(
                 az.cluster_name,
                 tenant_id,
@@ -389,7 +443,18 @@ def setup_or_upgrade(
                 storage_access_key,
                 enable_telemetry,
                 cleanup_state=True,
+                migrate_legacy_services=is_update,
             )
+            if migration_backup is not None and migration_backup.exists():
+                if not restore_redis_data(
+                    kubectl,
+                    str(migration_backup.parent),
+                    skip_confirmation=True,
+                    redis_image=REDIS_IMAGE,
+                    dump_file=migration_backup.name,
+                ):
+                    raise RuntimeError("Unable to restore Redis after service migration")
+                migration_backup.unlink()
             pending_rotation = prepare_remote_api_token(
                 os_artifacts, kubectl, rotate_api_token
             )
