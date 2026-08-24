@@ -43,6 +43,13 @@ DESTROY_WARNING = (
     "Do you wish to proceed? (Answering 'y' will wipe the resource group)"
 )
 REST_API_DEPLOYMENT = "terravibes-rest-api"
+BACKEND_DEPLOYMENTS = (
+    REST_API_DEPLOYMENT,
+    "terravibes-cache",
+    "terravibes-data-ops",
+    "terravibes-orchestrator",
+    "terravibes-worker",
+)
 REMOTE_REDIS_MIGRATION_BACKUP_PREFIX = "remote-redis-migration"
 
 
@@ -207,6 +214,32 @@ def recover_remote_api_token(kubectl: KubectlWrapper) -> str:
     if secret is None:
         raise ValueError("Remote API token Secret does not exist; run remote update")
     return remote_api_token_from_secret(secret)
+
+
+def restore_remote_services(
+    kubectl: KubectlWrapper, replicas: Dict[str, int]
+) -> None:
+    for deployment, count in replicas.items():
+        kubectl.scale("deployment", deployment, count)
+    for deployment in replicas:
+        kubectl.rollout_status("deployment", deployment)
+
+
+def quiesce_remote_services(kubectl: KubectlWrapper) -> Dict[str, int]:
+    replicas: Dict[str, int] = {}
+    try:
+        for deployment in BACKEND_DEPLOYMENTS:
+            resource = kubectl.get_or_none("deployment", deployment)
+            if resource is None:
+                continue
+            replicas[deployment] = int(resource["spec"].get("replicas", 1))
+            kubectl.scale("deployment", deployment, 0)
+        for deployment in replicas:
+            kubectl.rollout_status("deployment", deployment)
+    except Exception:
+        restore_remote_services(kubectl, replicas)
+        raise
+    return replicas
 
 
 def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> bool:
@@ -423,16 +456,21 @@ def setup_or_upgrade(
                         "Migrating Helm services to native resources. Redis state will "
                         "be preserved; transient RabbitMQ queues will be reset."
                     )
-                    if not backup_redis_data(
-                        kubectl,
-                        str(migration_backup.parent),
-                        dump_file=migration_backup.name,
-                        require_backup=True,
-                    ):
-                        raise RuntimeError(
-                            "Unable to back up Redis before service migration"
-                        )
-                    secure_path(migration_backup, 0o600)
+                    previous_replicas = quiesce_remote_services(kubectl)
+                    try:
+                        if not backup_redis_data(
+                            kubectl,
+                            str(migration_backup.parent),
+                            dump_file=migration_backup.name,
+                            require_backup=True,
+                        ):
+                            raise RuntimeError(
+                                "Unable to back up Redis before service migration"
+                            )
+                        secure_path(migration_backup, 0o600)
+                    except Exception:
+                        restore_remote_services(kubectl, previous_replicas)
+                        raise
                 if migration_backup.exists() and migration_backup.stat().st_size == 0:
                     raise RuntimeError("Redis migration backup is empty")
 
@@ -494,7 +532,8 @@ def setup_or_upgrade(
                 if is_update:
                     log("remote cluster updated, restarting services")
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
-                    kubectl.rollout_status("deployment", REST_API_DEPLOYMENT)
+                    for deployment in BACKEND_DEPLOYMENTS:
+                        kubectl.rollout_status("deployment", deployment)
                 if pending_rotation is not None:
                     activate_remote_api_token(kubectl, *pending_rotation)
 

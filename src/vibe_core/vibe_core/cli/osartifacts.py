@@ -166,7 +166,6 @@ class OSArtifacts:
             "https://kubernetes.io/docs/tasks/tools/install-kubectl/",
             InstallType.ALL,
             version_argument="version --client --output=yaml",
-            minimum_version="1.35.0",
             version_regex=rf"gitVersion:\s+{MAJOR_MINOR_PATCH_REGEX}",
         ),
         "kubelogin": Dependency(

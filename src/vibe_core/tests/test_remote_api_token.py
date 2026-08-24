@@ -388,6 +388,8 @@ def configured_update(
     monkeypatch.setattr(remote, "DaprWrapper", Mock(return_value=dapr))
     monkeypatch.setattr(remote, "status", Mock(return_value=True))
     monkeypatch.setattr(remote, "needs_service_migration", Mock(return_value=False))
+    monkeypatch.setattr(remote, "quiesce_remote_services", Mock(return_value={}))
+    monkeypatch.setattr(remote, "restore_remote_services", Mock())
     monkeypatch.setattr(remote, "backup_redis_data", Mock(return_value=True))
     monkeypatch.setattr(remote, "restore_redis_data", Mock(return_value=True))
     token = (
@@ -492,9 +494,9 @@ def test_update_provisions_before_services_and_restarts_services(
     kubectl.restart.assert_called_once_with(
         "deployment", selectors=["backend=terravibes"]
     )
-    kubectl.rollout_status.assert_called_once_with(
-        "deployment", "terravibes-rest-api"
-    )
+    assert [
+        call.args for call in kubectl.rollout_status.call_args_list
+    ] == [("deployment", deployment) for deployment in remote.BACKEND_DEPLOYMENTS]
 
 
 def test_update_token_failure_is_fail_closed_before_services(
@@ -507,6 +509,49 @@ def test_update_token_failure_is_fail_closed_before_services(
     assert run_update(artifacts, az) is False
     terraform.ensure_services.assert_not_called()
     kubectl.restart.assert_not_called()
+
+
+def test_migration_backup_failure_restores_quiesced_services(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    artifacts, az, terraform, kubectl, _ = configured_update(
+        monkeypatch, tmp_path, None
+    )
+    replicas = {"terravibes-rest-api": 1, "terravibes-worker": 3}
+    monkeypatch.setattr(remote, "needs_service_migration", Mock(return_value=True))
+    monkeypatch.setattr(
+        remote, "quiesce_remote_services", Mock(return_value=replicas)
+    )
+    restore = Mock()
+    monkeypatch.setattr(remote, "restore_remote_services", restore)
+    monkeypatch.setattr(
+        remote, "backup_redis_data", Mock(side_effect=RuntimeError("backup failed"))
+    )
+
+    assert run_update(artifacts, az) is False
+    restore.assert_called_once_with(kubectl, replicas)
+    terraform.ensure_k8s_cluster.assert_not_called()
+
+
+def test_quiesce_remote_services_preserves_replica_counts() -> None:
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.get_or_none.side_effect = lambda kind, name: (
+        {"spec": {"replicas": 3 if name == "terravibes-worker" else 1}}
+        if name in {"terravibes-rest-api", "terravibes-worker"}
+        else None
+    )
+
+    replicas = remote.quiesce_remote_services(kubectl)
+
+    assert replicas == {"terravibes-rest-api": 1, "terravibes-worker": 3}
+    assert [call.args for call in kubectl.scale.call_args_list] == [
+        ("deployment", "terravibes-rest-api", 0),
+        ("deployment", "terravibes-worker", 0),
+    ]
+    assert [call.args for call in kubectl.rollout_status.call_args_list] == [
+        ("deployment", "terravibes-rest-api"),
+        ("deployment", "terravibes-worker"),
+    ]
 
 
 def test_rotation_is_applied_after_services(
@@ -531,9 +576,9 @@ def test_rotation_is_applied_after_services(
     kubectl.restart.assert_called_once_with(
         "deployment", selectors=["backend=terravibes"]
     )
-    kubectl.rollout_status.assert_called_once_with(
-        "deployment", "terravibes-rest-api"
-    )
+    assert [
+        call.args for call in kubectl.rollout_status.call_args_list
+    ] == [("deployment", deployment) for deployment in remote.BACKEND_DEPLOYMENTS]
 
 
 def test_rotation_does_not_change_token_when_services_fail(

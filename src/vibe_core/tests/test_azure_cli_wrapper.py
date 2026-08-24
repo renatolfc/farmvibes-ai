@@ -32,8 +32,8 @@ def test_remote_cluster_name_fits_key_vault_limit() -> None:
     assert not remote.check_cluster_name_length("a" * 16)
 
 
-def test_kubectl_minimum_matches_current_aks_version_skew() -> None:
-    assert OSArtifacts.REQUIRED_TOOLS["kubectl"].minimum_version == "1.35.0"
+def test_kubectl_does_not_replace_clients_for_unrelated_cluster_versions() -> None:
+    assert OSArtifacts.REQUIRED_TOOLS["kubectl"].minimum_version is None
     assert KubectlInstaller.KUBECTL_RELEASE_URL.startswith("https://dl.k8s.io/")
 
 
