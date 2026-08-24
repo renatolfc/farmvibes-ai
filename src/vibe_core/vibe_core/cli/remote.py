@@ -560,6 +560,7 @@ def setup_or_upgrade(
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
                     for deployment in BACKEND_DEPLOYMENTS:
                         kubectl.rollout_status("deployment", deployment)
+                    # Dapr may query cache subscriptions before its gRPC app starts.
                     kubectl.restart("deployment", name=CACHE_DEPLOYMENT)
                     kubectl.rollout_status("deployment", CACHE_DEPLOYMENT)
                 if pending_rotation is not None:

@@ -81,3 +81,16 @@ def test_remote_aks_keeps_required_oidc_issuer_enabled():
     ).read_text()
 
     assert "oidc_issuer_enabled       = true" in terraform
+
+
+def test_cache_restart_keeps_one_replica_available():
+    terraform = (
+        Path(__file__).parents[1]
+        / "vibe_core"
+        / "terraform"
+        / "services"
+        / "cache.tf"
+    ).read_text()
+
+    assert "max_surge       = 1" in terraform
+    assert "max_unavailable = 0" in terraform
