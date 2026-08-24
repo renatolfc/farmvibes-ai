@@ -623,6 +623,7 @@ def test_build_args_for_workflow_generates_valid_output(workflow_run_config: Dic
         (["user_input.geojson", "workflow"], None),
         (["user_input.doesnt_exist"], KeyError),
         (["something_else.doesnt_exist"], KeyError),
+        (["spatio_temporal_json.doesnt_exist"], KeyError),
     ],
 )
 def test_summarize_runs(
@@ -639,7 +640,7 @@ def test_summarize_runs(
         spatio_temporal_json=None,
     )
     if exception is not None:
-        with pytest.raises(exception):  # type: ignore
+        with pytest.raises(exception, match="does not have field"):  # type: ignore
             provider.summarize_runs([run_config], fields)
     else:
         summary = provider.summarize_runs([run_config], fields)

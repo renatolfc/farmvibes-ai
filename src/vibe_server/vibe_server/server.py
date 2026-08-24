@@ -176,17 +176,15 @@ class TerravibesProvider:
             for i, src in enumerate(sources):
                 prefixes, suffix = field.rsplit(".", maxsplit=1)
                 obj = src
-                for prefix in prefixes.split("."):
-                    try:
+                try:
+                    for prefix in prefixes.split("."):
                         obj = obj[prefix]
-                    except TypeError as e:
-                        # We are trying to get a subfield from a field that
-                        # didn't exist in the first place. `obj` is None, so we
-                        # won't be able to get it here
-                        raise KeyError(
-                            f"Workflow run with id {runs[i].id} does not have field {field}"
-                        ) from e
-                summarized_runs[i].update({field: obj[suffix]})
+                    value = obj[suffix]
+                except (KeyError, TypeError) as e:
+                    raise KeyError(
+                        f"Workflow run with id {runs[i].id} does not have field {field}"
+                    ) from e
+                summarized_runs[i].update({field: value})
         return summarized_runs
 
     @add_trace
