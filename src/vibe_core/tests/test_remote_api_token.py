@@ -517,12 +517,16 @@ def test_update_provisions_before_services_and_restarts_services(
     assert order == ["token", "services"]
     assert provision.call_args.args[1] is False
     kubectl.context.assert_called_once_with("cluster")
-    kubectl.restart.assert_called_once_with(
-        "deployment", selectors=["backend=terravibes"]
-    )
+    assert [(call.args, call.kwargs) for call in kubectl.restart.call_args_list] == [
+        (("deployment",), {"selectors": ["backend=terravibes"]}),
+        (("deployment",), {"name": remote.CACHE_DEPLOYMENT}),
+    ]
     assert [
         call.args for call in kubectl.rollout_status.call_args_list
-    ] == [("deployment", deployment) for deployment in remote.BACKEND_DEPLOYMENTS]
+    ] == [
+        *[("deployment", deployment) for deployment in remote.BACKEND_DEPLOYMENTS],
+        ("deployment", remote.CACHE_DEPLOYMENT),
+    ]
 
 
 def test_update_token_failure_is_fail_closed_before_services(
@@ -638,15 +642,19 @@ def test_rotation_is_applied_after_services(
     activation.side_effect = lambda *args: order.append("rotate")
 
     assert run_update(artifacts, az, rotate=True) is True
-    assert order == ["services", "restart", "rotate"]
+    assert order == ["services", "restart", "restart", "rotate"]
     prepare.assert_called_once_with(kubectl, True)
     activation.assert_called_once_with(kubectl, "old", "new")
-    kubectl.restart.assert_called_once_with(
-        "deployment", selectors=["backend=terravibes"]
-    )
+    assert [(call.args, call.kwargs) for call in kubectl.restart.call_args_list] == [
+        (("deployment",), {"selectors": ["backend=terravibes"]}),
+        (("deployment",), {"name": remote.CACHE_DEPLOYMENT}),
+    ]
     assert [
         call.args for call in kubectl.rollout_status.call_args_list
-    ] == [("deployment", deployment) for deployment in remote.BACKEND_DEPLOYMENTS]
+    ] == [
+        *[("deployment", deployment) for deployment in remote.BACKEND_DEPLOYMENTS],
+        ("deployment", remote.CACHE_DEPLOYMENT),
+    ]
 
 
 def test_rotation_does_not_change_token_when_services_fail(

@@ -43,9 +43,10 @@ DESTROY_WARNING = (
     "Do you wish to proceed? (Answering 'y' will wipe the resource group)"
 )
 REST_API_DEPLOYMENT = "terravibes-rest-api"
+CACHE_DEPLOYMENT = "terravibes-cache"
 BACKEND_DEPLOYMENTS = (
     REST_API_DEPLOYMENT,
-    "terravibes-cache",
+    CACHE_DEPLOYMENT,
     "terravibes-data-ops",
     "terravibes-orchestrator",
     "terravibes-worker",
@@ -559,6 +560,8 @@ def setup_or_upgrade(
                     kubectl.restart("deployment", selectors=["backend=terravibes"])
                     for deployment in BACKEND_DEPLOYMENTS:
                         kubectl.rollout_status("deployment", deployment)
+                    kubectl.restart("deployment", name=CACHE_DEPLOYMENT)
+                    kubectl.rollout_status("deployment", CACHE_DEPLOYMENT)
                 if pending_rotation is not None:
                     activate_remote_api_token(kubectl, *pending_rotation)
 
