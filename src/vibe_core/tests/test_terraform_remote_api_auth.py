@@ -58,11 +58,11 @@ def test_remote_services_use_pinned_native_images():
         terraform / "aks" / "modules" / "kubernetes" / "providers.tf"
     ).read_text()
     assert 'source  = "hashicorp/random"' in providers
-    assert 'provider "helm"' not in (
-        terraform / "services" / "providers.tf"
-    ).read_text()
+    services_providers = (terraform / "services" / "providers.tf").read_text()
+    assert 'provider "helm"' not in services_providers
+    assert 'backend "kubernetes"' in services_providers
 
     ensure_services = wrappers.split("def ensure_services(", 1)[1].split(
         "def ensure_local_cluster(", 1
     )[0]
-    assert "backend_config" not in ensure_services
+    assert "backend_config=backend_config" in ensure_services

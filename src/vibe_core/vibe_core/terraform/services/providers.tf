@@ -15,6 +15,10 @@ terraform {
     }
   }
 
+  backend "kubernetes" {
+    secret_suffix = "terraform-state"
+  }
+
 }
 
 provider "kubernetes" {
