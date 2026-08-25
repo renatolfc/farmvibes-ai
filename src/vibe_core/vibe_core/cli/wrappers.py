@@ -624,7 +624,14 @@ class TerraformWrapper:
             config_context=kubernetes_config_context,
         )
         with kubectl.context():
-            for secret in secrets:
+            for secret in sorted(
+                secrets,
+                key=lambda item: (
+                    item["metadata"]["name"]
+                    != self.LEGACY_SERVICES_STATE_SECRET,
+                    item["metadata"]["name"],
+                ),
+            ):
                 kubectl.delete(
                     "secret",
                     secret["metadata"]["name"],

@@ -565,12 +565,12 @@ def test_legacy_services_state_is_deleted_from_default_namespace() -> None:
     terraform = TerraformWrapper(artifacts)
     terraform._legacy_services_state_secrets = Mock(
         return_value=[
-            {"metadata": {"name": terraform.LEGACY_SERVICES_STATE_SECRET}},
             {
                 "metadata": {
                     "name": f"{terraform.LEGACY_SERVICES_STATE_SECRET}-part-1"
                 }
             },
+            {"metadata": {"name": terraform.LEGACY_SERVICES_STATE_SECRET}},
         ]
     )
     with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:
