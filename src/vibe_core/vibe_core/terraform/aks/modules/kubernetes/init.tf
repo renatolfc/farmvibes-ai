@@ -92,11 +92,6 @@ resource "helm_release" "nginx-ingress" {
       value = "false"
     },
     {
-      name  = "service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-health-probe-request-path"
-      value = "/ping"
-      type  = "string"
-    },
-    {
       name  = "service.annotations.service\\.beta\\.kubernetes\\.io/azure-dns-label-name"
       value = var.public_ip_dns
       type  = "string"
