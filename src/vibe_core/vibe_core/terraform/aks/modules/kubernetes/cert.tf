@@ -7,6 +7,8 @@ resource "helm_release" "letsencrypt" {
   chart      = "cert-manager"
   namespace  = "kube-system"
   version    = "v1.21.1"
+  atomic     = true
+  timeout    = 600
 
   set = [
     {
