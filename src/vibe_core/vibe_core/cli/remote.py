@@ -462,7 +462,6 @@ def setup_or_upgrade(
                 storage_access_key,
                 enable_telemetry,  # Required to create azure monitor and application insights
                 cleanup_state=True,
-                is_update=is_update,
             )
             secure_path(Path(os_artifacts.config_file("kubeconfig")), 0o600)
 

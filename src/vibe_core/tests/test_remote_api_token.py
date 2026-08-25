@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict
@@ -11,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import vibe_core.cli.main as cli_main
 import vibe_core.cli.remote as remote
 import vibe_core.cli.wrappers as wrappers
 from vibe_core.cli.osartifacts import OSArtifacts
@@ -23,6 +25,19 @@ def encoded_secret(token: str) -> Dict[str, Any]:
         "type": "Opaque",
         "data": {"token": base64.b64encode(token.encode()).decode()},
     }
+
+
+def test_cli_exits_when_dispatch_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(sys, "argv", ["farmvibes-ai", "remote", "status"])
+    monkeypatch.setattr(cli_main, "dispatch_remote", Mock(return_value=False))
+    monkeypatch.setattr(cli_main, "setup_logging", Mock(return_value="log"))
+
+    with pytest.raises(SystemExit) as error:
+        cli_main.main()
+
+    assert error.value.code == 1
 
 
 def configured_artifacts(tmp_path: Path) -> Mock:

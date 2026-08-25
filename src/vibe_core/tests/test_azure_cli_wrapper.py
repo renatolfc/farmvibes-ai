@@ -59,6 +59,42 @@ def test_state_storage_hardening_enables_versioning_and_soft_delete() -> None:
     assert command[command.index("--container-delete-retention-days") + 1] == "14"
 
 
+def test_infra_replacement_does_not_restart_workloads_mid_upgrade(
+    tmp_path: Path,
+) -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    artifacts.config_dir = tmp_path
+    artifacts.get_terraform_file.return_value = "/tmp/infra.tfstate"
+    terraform = TerraformWrapper(artifacts)
+    terraform.init = Mock()
+    terraform.plan = Mock(return_value={})
+    terraform._get_replacements = Mock(return_value=["node-pool"])
+    terraform._has_storage_replacement = Mock(return_value=False)
+    terraform.apply = Mock()
+    terraform.get_output = Mock(return_value={"state": "ready"})
+
+    with (
+        patch("vibe_core.cli.wrappers.verify_to_proceed", return_value=True),
+        patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class,
+    ):
+        result = terraform.ensure_infra(
+            "tenant",
+            "subscription",
+            "westus2",
+            "cluster",
+            "group",
+            1,
+            "storage",
+            "state",
+            "key",
+            False,
+        )
+
+    assert result == {"state": "ready"}
+    kubectl_class.assert_not_called()
+
+
 def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.aks_directory = "/terraform/aks"

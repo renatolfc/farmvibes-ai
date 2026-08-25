@@ -468,7 +468,6 @@ class TerraformWrapper:
         storage_access_key: str,
         enable_telemetry: bool,
         cleanup_state: bool = False,
-        is_update: bool = False,
     ):
         infra_directory = os.path.join(self.os_artifacts.aks_directory, "modules", "infra")
         log("Executing OpenTofu to build out infrastructure (this may take up to 30 minutes)...")
@@ -502,13 +501,11 @@ class TerraformWrapper:
         with tempfile.NamedTemporaryFile(delete=False) as plan_file:
             plan = self.plan(infra_directory, state_file, variables, plan_file=plan_file.name)
             replacements = self._get_replacements(plan)
-            needs_restart = False
             if replacements:
                 log(
                     f"OpenTofu plan requires replacement of resources {', '.join(replacements)}..."
                 )
                 proceed = True
-                needs_restart = True
                 if self._has_storage_replacement(replacements):
                     proceed = verify_to_proceed(
                         "\nCluster storage is being replaced. "
@@ -525,10 +522,7 @@ class TerraformWrapper:
                     raise RuntimeError("Cancelation Requested")
                 else:
                     log("Continuing with OpenTofu apply...")
-            apply = self.apply(infra_directory, state_file, variables, plan_file=plan_file.name)
-            if is_update and (needs_restart or "azurerm_key_vault_secret" in apply):
-                kubectl = KubectlWrapper(self.os_artifacts, cluster_name)
-                kubectl.restart("deployment", selectors=["backend=terravibes"])
+            self.apply(infra_directory, state_file, variables, plan_file=plan_file.name)
             return self.get_output(infra_directory, state_file)
 
     def ensure_k8s_cluster(
