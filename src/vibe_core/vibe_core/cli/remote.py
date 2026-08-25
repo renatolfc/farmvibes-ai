@@ -59,7 +59,10 @@ BACKEND_DEPLOYMENTS = (
 )
 REMOTE_REDIS_MIGRATION_BACKUP_PREFIX = "remote-redis-migration"
 LEGACY_INGRESS_NAMESPACE = "ingress-basic"
-LEGACY_INGRESS_SERVICE = "ingress-nginx-nginx-ingress"
+LEGACY_INGRESS_SERVICES = (
+    "ingress-nginx-nginx-ingress",
+    "ingress-nginx-controller",
+)
 
 
 def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
@@ -254,32 +257,33 @@ def quiesce_remote_services(kubectl: KubectlWrapper) -> Dict[str, int]:
 
 def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
     with kubectl.context():
-        service = kubectl.get_or_none(
-            "service",
-            LEGACY_INGRESS_SERVICE,
-            LEGACY_INGRESS_NAMESPACE,
-        )
-        labels = service.get("metadata", {}).get("labels", {}) if service else {}
-        if service is None:
-            return False
-        if labels.get("app.kubernetes.io/instance") != "ingress-nginx":
-            raise RuntimeError(
-                f"Refusing to replace unrecognized Service "
-                f"{LEGACY_INGRESS_NAMESPACE}/{LEGACY_INGRESS_SERVICE}"
+        removed = False
+        for name in LEGACY_INGRESS_SERVICES:
+            service = kubectl.get_or_none(
+                "service", name, LEGACY_INGRESS_NAMESPACE
             )
-        kubectl.delete(
-            "service",
-            LEGACY_INGRESS_SERVICE,
-            namespace=LEGACY_INGRESS_NAMESPACE,
-            wait=False,
-        )
-        kubectl.wait_for_delete(
-            "service",
-            LEGACY_INGRESS_SERVICE,
-            timeout_s=600,
-            namespace=LEGACY_INGRESS_NAMESPACE,
-        )
-    return True
+            if service is None:
+                continue
+            labels = service.get("metadata", {}).get("labels", {})
+            if labels.get("app.kubernetes.io/instance") != "ingress-nginx":
+                raise RuntimeError(
+                    f"Refusing to replace unrecognized Service "
+                    f"{LEGACY_INGRESS_NAMESPACE}/{name}"
+                )
+            kubectl.delete(
+                "service",
+                name,
+                namespace=LEGACY_INGRESS_NAMESPACE,
+                wait=False,
+            )
+            kubectl.wait_for_delete(
+                "service",
+                name,
+                timeout_s=600,
+                namespace=LEGACY_INGRESS_NAMESPACE,
+            )
+            removed = True
+    return removed
 
 
 def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> bool:

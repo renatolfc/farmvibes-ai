@@ -237,24 +237,27 @@ def test_remote_status_stops_when_requested_cluster_does_not_exist(
 def test_legacy_ingress_service_is_released_before_chart_cutover() -> None:
     kubectl = Mock(spec=KubectlWrapper)
     kubectl.context.return_value = nullcontext()
-    kubectl.get_or_none.return_value = {
-        "metadata": {
-            "labels": {
-                "app.kubernetes.io/instance": "ingress-nginx",
+    kubectl.get_or_none.side_effect = [
+        {
+            "metadata": {
+                "labels": {
+                    "app.kubernetes.io/instance": "ingress-nginx",
+                }
             }
-        }
-    }
+        },
+        None,
+    ]
 
     assert remote.remove_legacy_ingress_service(kubectl)
     kubectl.delete.assert_called_once_with(
         "service",
-        remote.LEGACY_INGRESS_SERVICE,
+        remote.LEGACY_INGRESS_SERVICES[0],
         namespace=remote.LEGACY_INGRESS_NAMESPACE,
         wait=False,
     )
     kubectl.wait_for_delete.assert_called_once_with(
         "service",
-        remote.LEGACY_INGRESS_SERVICE,
+        remote.LEGACY_INGRESS_SERVICES[0],
         timeout_s=600,
         namespace=remote.LEGACY_INGRESS_NAMESPACE,
     )

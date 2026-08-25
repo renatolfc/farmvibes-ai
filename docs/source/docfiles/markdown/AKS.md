@@ -211,7 +211,7 @@ the kubernetes components, which are:
 - [RabbitMQ](https://www.rabbitmq.com/) for messaging between FarmVibes.AI services
 - [Dapr (Distributed Application Runtime)](https://dapr.io/) for abstracting service invocation and
   messaging
-- [ingress-nginx](https://kubernetes.github.io/ingress-nginx/) for the public TLS ingress
+- [Traefik](https://traefik.io/traefik/) for the public TLS ingress
 - A persistent volume that uses the storage account created in the previous
   step as backing store
 - Open telemetry service for collecting telemetry data from services
@@ -331,8 +331,8 @@ Infrastructure updates also perform the following one-time migrations:
 - The Blob backend enables versioning and 14-day blob/container soft delete.
 - Dapr and cert-manager advance one supported minor version at a time before the final chart
   versions are applied.
-- The NGINX Inc controller is replaced by community ingress-nginx using the
-  `nginx-community` IngressClass.
+- The NGINX Inc controller is replaced by Traefik using the `traefik-remote`
+  IngressClass.
 - AKS node pools move from Mariner to Azure Linux 3, which can roll/reimage nodes.
 
 Allow a maintenance window for remote updates and make sure no workflows are running.

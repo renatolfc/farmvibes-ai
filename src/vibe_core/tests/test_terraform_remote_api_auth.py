@@ -29,7 +29,7 @@ def test_remote_api_auth_kubernetes_contract():
     ) in terraform
 
     assert (
-        'ingress_class_name = var.local_deployment ? "traefik" : "nginx-community"'
+        'ingress_class_name = var.local_deployment ? "traefik" : "traefik-remote"'
         in terraform
     )
     assert (
@@ -115,8 +115,8 @@ def test_maintenance_infrastructure_versions_and_platforms():
     assert 'version    = "1.18.3"' in (kubernetes / "dapr.tf").read_text()
     assert 'version    = "1.18.3"' in (local / "dapr.tf").read_text()
     ingress = (kubernetes / "init.tf").read_text()
-    assert "https://kubernetes.github.io/ingress-nginx" in ingress
-    assert 'version    = "4.15.1"' in ingress
+    assert "https://traefik.github.io/charts" in ingress
+    assert 'version    = "41.3.0"' in ingress
     cert_manager = (kubernetes / "cert.tf").read_text()
     assert 'version    = "v1.21.1"' in cert_manager
     assert 'name  = "crds.enabled"' in cert_manager

@@ -169,7 +169,7 @@ resource "kubernetes_ingress_v1" "restapi" {
     }
   }
   spec {
-    ingress_class_name = var.local_deployment ? "traefik" : "nginx-community"
+    ingress_class_name = var.local_deployment ? "traefik" : "traefik-remote"
     rule {
       host = var.public_ip_fqdn
       http {

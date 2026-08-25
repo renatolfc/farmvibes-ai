@@ -38,7 +38,7 @@ resource "kubectl_manifest" "clusterissuer" {
         solvers:
         - http01:
             ingress:
-              class: nginx-community
+              class: traefik-remote
               podTemplate:
                 spec:
                   nodeSelector:
