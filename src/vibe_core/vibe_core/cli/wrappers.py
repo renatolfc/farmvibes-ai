@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import base64
+import gzip
 import hashlib
 import json
 import os
@@ -89,6 +90,10 @@ class TerraformWrapper:
     INFRA_STATE_FILE = "infra.tfstate"
     SERVICES_STATE_FILE = "services.tfstate"
     LEGACY_SERVICES_STATE_SECRET = "tfstate-default-terraform-state"
+    LEGACY_SERVICES_STATE_SELECTOR = (
+        "tfstate=true,tfstateSecretSuffix=terraform-state,"
+        "tfstateWorkspace=default"
+    )
     ANSI_ESCAPE_PAT = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
     REPLACEMENT_PAT = re.compile(r"#\s+(.*)\s+must\s+be\s+replaced")
     REPLACEMENT_SUBSTRINGS = [
@@ -283,32 +288,68 @@ class TerraformWrapper:
         )
         return json.loads(output) if output else {}
 
+    def _legacy_services_state_secrets(
+        self,
+        kubernetes_config_path: str,
+        kubernetes_config_context: str,
+    ) -> List[Dict[str, Any]]:
+        output = execute_cmd(
+            [
+                self.os_artifacts.kubectl,
+                "--kubeconfig",
+                kubernetes_config_path,
+                "--context",
+                kubernetes_config_context,
+                "get",
+                "secrets",
+                "--namespace",
+                "default",
+                "--selector",
+                self.LEGACY_SERVICES_STATE_SELECTOR,
+                "--output",
+                "json",
+            ],
+            check_empty_result=False,
+            error_string="Failed to read legacy services state",
+            capture_output=True,
+            censor_output=True,
+            subprocess_log_level="debug",
+        )
+        return json.loads(output or "{}").get("items", [])
+
     def _pull_legacy_services_state(
         self,
         kubernetes_config_path: str,
         kubernetes_config_context: str,
     ) -> Dict[str, Any]:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            Path(temporary_directory, "main.tf").write_text(
-                (
-                    'terraform {\n'
-                    '  required_version = ">=1.6.0"\n'
-                    '  backend "kubernetes" {}\n'
-                    '}\n'
-                ),
-                encoding="utf-8",
-            )
-            self.init(
-                temporary_directory,
-                refresh_creds=False,
-                backend_config={
-                    "config_path": kubernetes_config_path,
-                    "config_context": kubernetes_config_context,
-                    "secret_suffix": "terraform-state",
-                },
-                cleanup_state=True,
-            )
-            return self._pull_state(temporary_directory)
+        secrets = self._legacy_services_state_secrets(
+            kubernetes_config_path,
+            kubernetes_config_context,
+        )
+        if not secrets:
+            return {}
+
+        def chunk(secret: Dict[str, Any]) -> Tuple[int, bytes]:
+            name = secret.get("metadata", {}).get("name", "")
+            if name == self.LEGACY_SERVICES_STATE_SECRET:
+                index = 0
+            else:
+                match = re.fullmatch(
+                    rf"{re.escape(self.LEGACY_SERVICES_STATE_SECRET)}-part-(\d+)",
+                    name,
+                )
+                if match is None:
+                    raise RuntimeError(f"Unexpected services state Secret {name}")
+                index = int(match.group(1))
+            encoded = secret.get("data", {}).get("tfstate")
+            if not encoded:
+                raise RuntimeError(f"Services state Secret {name} has no state")
+            return index, base64.b64decode(encoded)
+
+        chunks = sorted(map(chunk, secrets))
+        if [index for index, _ in chunks] != list(range(len(chunks))):
+            raise RuntimeError("Services state Secret chunks are incomplete")
+        return json.loads(gzip.decompress(b"".join(data for _, data in chunks)))
 
     def _push_state(
         self,
@@ -356,20 +397,26 @@ class TerraformWrapper:
     def _delete_legacy_services_state(
         self,
         cluster_name: str,
+        kubernetes_config_path: str,
         kubernetes_config_context: str,
     ) -> None:
+        secrets = self._legacy_services_state_secrets(
+            kubernetes_config_path,
+            kubernetes_config_context,
+        )
         kubectl = KubectlWrapper(
             self.os_artifacts,
             cluster_name,
             config_context=kubernetes_config_context,
         )
         with kubectl.context():
-            kubectl.delete(
-                "secret",
-                self.LEGACY_SERVICES_STATE_SECRET,
-                ignore_not_found=True,
-                namespace="default",
-            )
+            for secret in secrets:
+                kubectl.delete(
+                    "secret",
+                    secret["metadata"]["name"],
+                    ignore_not_found=True,
+                    namespace="default",
+                )
 
     def init(
         self,
@@ -689,6 +736,7 @@ class TerraformWrapper:
                 raise RuntimeError("Services state migration verification failed")
             self._delete_legacy_services_state(
                 cluster_name,
+                kubernetes_config_path,
                 kubernetes_config_context,
             )
         variables = {
@@ -2602,6 +2650,11 @@ class DaprWrapper:  # DaprWrapr 🫠
     VERSION_STRING = "VERSION"
     CRD_BASE = "https://raw.githubusercontent.com/dapr/dapr/v{}/charts/dapr/crds/"
     STABLE_MINOR_VERSIONS = (
+        "1.9.6",
+        "1.10.10",
+        "1.11.6",
+        "1.12.5",
+        "1.13.6",
         "1.14.5",
         "1.15.14",
         "1.16.19",

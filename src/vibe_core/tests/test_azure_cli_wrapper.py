@@ -1,6 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import base64
+import gzip
+import json
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, List
@@ -156,6 +159,41 @@ def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
     }
 
 
+def test_legacy_services_state_reader_reassembles_chunks() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    terraform = TerraformWrapper(artifacts)
+    state = {"lineage": "lineage", "resources": [{"type": "test"}]}
+    compressed = gzip.compress(json.dumps(state).encode())
+    midpoint = len(compressed) // 2
+    terraform._legacy_services_state_secrets = Mock(
+        return_value=[
+            {
+                "metadata": {
+                    "name": f"{terraform.LEGACY_SERVICES_STATE_SECRET}-part-1"
+                },
+                "data": {
+                    "tfstate": base64.b64encode(
+                        compressed[midpoint:]
+                    ).decode()
+                },
+            },
+            {
+                "metadata": {
+                    "name": terraform.LEGACY_SERVICES_STATE_SECRET
+                },
+                "data": {
+                    "tfstate": base64.b64encode(
+                        compressed[:midpoint]
+                    ).decode()
+                },
+            },
+        ]
+    )
+
+    assert terraform._pull_legacy_services_state("kubeconfig", "context") == state
+
+
 def test_services_state_retry_requires_matching_lineage() -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.aks_directory = "/terraform/aks"
@@ -225,16 +263,34 @@ def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
 
 def test_legacy_services_state_is_deleted_from_default_namespace() -> None:
     artifacts = Mock(spec=OSArtifacts)
+    terraform = TerraformWrapper(artifacts)
+    terraform._legacy_services_state_secrets = Mock(
+        return_value=[
+            {"metadata": {"name": terraform.LEGACY_SERVICES_STATE_SECRET}},
+            {
+                "metadata": {
+                    "name": f"{terraform.LEGACY_SERVICES_STATE_SECRET}-part-1"
+                }
+            },
+        ]
+    )
     with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:
-        TerraformWrapper(artifacts)._delete_legacy_services_state(
-            "cluster", "cluster-admin"
+        terraform._delete_legacy_services_state(
+            "cluster", "kubeconfig", "cluster-admin"
         )
 
-    kubectl_class.return_value.delete.assert_called_once_with(
-        "secret",
+    assert [
+        call.args[1] for call in kubectl_class.return_value.delete.call_args_list
+    ] == [
         TerraformWrapper.LEGACY_SERVICES_STATE_SECRET,
-        ignore_not_found=True,
-        namespace="default",
+        f"{TerraformWrapper.LEGACY_SERVICES_STATE_SECRET}-part-1",
+    ]
+    assert all(
+        call.kwargs == {
+            "ignore_not_found": True,
+            "namespace": "default",
+        }
+        for call in kubectl_class.return_value.delete.call_args_list
     )
 
 
@@ -262,10 +318,15 @@ def test_opentofu_version_is_pinned_for_state_migration() -> None:
 
 def test_dapr_upgrade_path_uses_latest_patch_for_each_minor() -> None:
     dapr = DaprWrapper(Mock(), Mock())
-    dapr.version = Mock(return_value=["1.13.3"])
+    dapr.version = Mock(return_value=["1.9.4"])
     dapr._target_version = Mock(return_value="1.18.3")
 
     assert dapr.upgrade_path() == [
+        "1.9.6",
+        "1.10.10",
+        "1.11.6",
+        "1.12.5",
+        "1.13.6",
         "1.14.5",
         "1.15.14",
         "1.16.19",
