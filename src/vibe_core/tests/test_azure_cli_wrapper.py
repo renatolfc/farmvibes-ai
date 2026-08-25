@@ -120,6 +120,21 @@ def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
     }
 
 
+def test_legacy_services_state_is_deleted_from_default_namespace() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:
+        TerraformWrapper(artifacts)._delete_legacy_services_state(
+            "cluster", "cluster-admin"
+        )
+
+    kubectl_class.return_value.delete.assert_called_once_with(
+        "secret",
+        TerraformWrapper.LEGACY_SERVICES_STATE_SECRET,
+        ignore_not_found=True,
+        namespace="default",
+    )
+
+
 def test_opentofu_installer_uses_official_release_assets() -> None:
     with patch.object(
         OpenTofuInstaller, "latest_release", new_callable=PropertyMock

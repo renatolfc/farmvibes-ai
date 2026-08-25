@@ -361,6 +361,7 @@ class TerraformWrapper:
                 "secret",
                 self.LEGACY_SERVICES_STATE_SECRET,
                 ignore_not_found=True,
+                namespace="default",
             )
 
     def init(
