@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import base64
 import hashlib
 import json
 import os
@@ -13,15 +14,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from functools import partialmethod
-from pathlib import PureWindowsPath
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path, PureWindowsPath
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
 from .constants import RABBITMQ_IMAGE, REDIS_IMAGE
 from .helper import execute_cmd, is_port_free, log_should_be_logged_in, verify_to_proceed
 from .logging import ColorFormatter, log
-from .osartifacts import OSArtifacts
+from .osartifacts import OSArtifacts, secure_path
 
 AZ_CREDS_REFRESH_ATTEMPTS = 2
 AZ_LOGIN_PROMPT = "`az login`"
@@ -119,16 +120,22 @@ class TerraformWrapper:
         variables: Dict[str, str],
         refresh_creds: bool = True,
         plan: bool = False,
+        destroy: bool = False,
         plan_file: str = "",
+        targets: Optional[List[str]] = None,
     ):
         if refresh_creds:
             assert self.az is not None, "AzureCliWrapper must be provided to refresh credentials"
             self.az.refresh_az_creds()
-        log(f"{'Planning' if plan else 'Applying'} terraform in {working_directory}")
+        action = "plan" if plan else "destroy" if destroy else "apply"
+        log(
+            f"{'Planning' if plan else 'Destroying' if destroy else 'Applying'} "
+            f"terraform in {working_directory}"
+        )
         command = [
             self.os_artifacts.terraform,
             f"-chdir={working_directory}",
-            "plan" if plan else "apply",
+            action,
             f"-state={state_file}",
         ]
         env_vars = {"TF_PLUGIN_CACHE_DIR": self.PLUGIN_CACHE_DIR}
@@ -145,13 +152,14 @@ class TerraformWrapper:
                     v = v.replace("\\", "/")
                 command += ["-var", f"{k}={v}"]
             command += ["-var", f"environment={self.environment}"]
+        command += [f"-target={target}" for target in targets or []]
         env_vars["ARM_ENVIRONMENT"] = self.environment
         stdout = execute_cmd(
             command,
             check_return_code=True,
             check_empty_result=False,
             error_string=(
-                f"Failed to {'plan' if plan else 'apply'} terraform resources "
+                f"Failed to {action} terraform resources "
                 f"in {working_directory}"
             ),
             capture_output=True,
@@ -161,6 +169,66 @@ class TerraformWrapper:
 
     plan = partialmethod(_plan_or_apply, plan=True)
     apply = partialmethod(_plan_or_apply, plan=False)
+    destroy = partialmethod(_plan_or_apply, destroy=True)
+
+    def state_resources(self, working_directory: str, state_file: str) -> List[str]:
+        output = execute_cmd(
+            [
+                self.os_artifacts.terraform,
+                f"-chdir={working_directory}",
+                "state",
+                "list",
+                f"-state={state_file}",
+            ],
+            check_return_code=True,
+            check_empty_result=False,
+            error_string=f"Failed to list terraform state in {working_directory}",
+            capture_output=True,
+            env_vars={
+                "ARM_ENVIRONMENT": self.environment,
+                "TF_PLUGIN_CACHE_DIR": self.PLUGIN_CACHE_DIR,
+            },
+        )
+        return output.splitlines()
+
+    def destroy_legacy_service_charts(
+        self,
+        working_directory: str,
+        state_file: str,
+        variables: Dict[str, str],
+        cluster_name: str,
+        kubernetes_config_context: str,
+        on_destroy: Optional[Callable[[], None]] = None,
+    ) -> None:
+        legacy = [
+            resource
+            for resource in ("helm_release.redis", "helm_release.rabbitmq")
+            if resource in self.state_resources(working_directory, state_file)
+        ]
+        if not legacy:
+            log("No legacy Helm service releases found", level="debug")
+        else:
+            if on_destroy is not None:
+                on_destroy()
+            self.destroy(working_directory, state_file, variables, targets=legacy)
+        kubectl = KubectlWrapper(
+            self.os_artifacts,
+            cluster_name,
+            config_context=kubernetes_config_context,
+        )
+        delete_rabbitmq_pvc = "helm_release.rabbitmq" in legacy
+        with kubectl.context():
+            if not delete_rabbitmq_pvc:
+                pvc = kubectl.get_or_none("pvc", "data-rabbitmq-0")
+                labels = pvc.get("metadata", {}).get("labels", {}) if pvc else {}
+                delete_rabbitmq_pvc = (
+                    labels.get("app.kubernetes.io/managed-by") == "Helm"
+                    and labels.get("app.kubernetes.io/instance") == "rabbitmq"
+                )
+            if delete_rabbitmq_pvc:
+                kubectl.delete(
+                    "pvc", "data-rabbitmq-0", ignore_not_found=True
+                )
 
     def get_output(
         self,
@@ -378,6 +446,8 @@ class TerraformWrapper:
         backend_storage_access_key: str,
         enable_telemetry: bool,
         cleanup_state: bool = False,
+        migrate_legacy_services: bool = False,
+        on_legacy_destroy: Optional[Callable[[], None]] = None,
     ):
         # Do kubernetes infra now
         kubernetes_directory = os.path.join(
@@ -416,11 +486,22 @@ class TerraformWrapper:
             "current_user_name": current_user_name,
             "certificate_email": certificate_email,
             "enable_telemetry": str(enable_telemetry).lower(),
+            "redis_image": REDIS_IMAGE,
+            "rabbitmq_image": RABBITMQ_IMAGE,
         }
 
         state_file = self.os_artifacts.get_terraform_file(
             "kubernetes.tfstate", cluster_name, resource_group
         )
+        if migrate_legacy_services:
+            self.destroy_legacy_service_charts(
+                kubernetes_directory,
+                state_file,
+                variables,
+                cluster_name,
+                kubernetes_config_context,
+                on_legacy_destroy,
+            )
         self.apply(kubernetes_directory, state_file, variables)
 
         return self.get_output(kubernetes_directory, state_file)
@@ -1046,6 +1127,8 @@ class AzureCliWrapper:
         error = "Couldn't get storage account keys. Do you have access to the resource group?"
         results = execute_cmd(cmd, True, False, error, censor_output=True)
         keys = json.loads(results)
+        if isinstance(keys, dict):
+            keys = keys["keys"]
         key = keys[0]["value"]
         return key
 
@@ -1169,20 +1252,40 @@ class AzureCliWrapper:
             self.os_artifacts.az,
             "aks",
             "get-credentials",
+            "--admin",
             "--name",
             self.cluster_name,
             "--resource-group",
             self.resource_group,
+            "--file",
+            self.os_artifacts.config_file("kubeconfig"),
             "--overwrite-existing",
         ]
 
         error = "Couldn't get kubernetes credentials. Do you have access to the cluster?"
         execute_cmd(cmd, True, False, error, subprocess_log_level="debug")
+        secure_path(Path(self.os_artifacts.config_file("kubeconfig")), 0o600)
 
-        # Now we have to use kubelogin to get/convert the credentials
-        cmd = [self.os_artifacts.kubelogin, "convert-kubeconfig", "-l", "azurecli"]
-        error = "Couldn't convert kubernetes credentials using kubelogin. Sorry."
-        execute_cmd(cmd, True, False, error_string=error, subprocess_log_level="debug")
+    def get_kubernetes_version(self) -> str:
+        return execute_cmd(
+            [
+                self.os_artifacts.az,
+                "aks",
+                "show",
+                "--name",
+                self.cluster_name,
+                "--resource-group",
+                self.resource_group,
+                "--query",
+                "kubernetesVersion",
+                "-o",
+                "tsv",
+            ],
+            check_return_code=True,
+            check_empty_result=True,
+            error_string="Couldn't get AKS Kubernetes version",
+            capture_output=True,
+        ).strip()
 
     def ensure_azurerm_backend(
         self,
@@ -1409,7 +1512,10 @@ class KubectlWrapper:
         if ignore_not_found:
             cmd.append("--ignore-not-found=true")
         execute_cmd(
-            cmd, error_string=f"Unable to delete {kind} {name}", subprocess_log_level="debug"
+            cmd,
+            check_empty_result=False,
+            error_string=f"Unable to delete {kind} {name}",
+            subprocess_log_level="debug",
         )
 
     def get_secret(self, name: str, key: str, cluster_name: str = ""):
@@ -1509,6 +1615,50 @@ class KubectlWrapper:
                 censor_output=True,
                 subprocess_log_level="debug",
             )
+
+    def upsert_opaque_secret(self, name: str, data: Dict[str, str]) -> None:
+        manifest = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": name},
+            "type": "Opaque",
+            "data": {
+                key: base64.b64encode(value.encode()).decode()
+                for key, value in data.items()
+            },
+        }
+        descriptor, manifest_path = tempfile.mkstemp(
+            dir=self.os_artifacts.private_config_dir,
+            prefix=".secret-",
+            suffix=".json",
+        )
+        try:
+            secure_path(Path(manifest_path), 0o600)
+            manifest_file = os.fdopen(descriptor, "w")
+            descriptor = -1
+            with manifest_file:
+                json.dump(manifest, manifest_file)
+                manifest_file.flush()
+                os.fsync(manifest_file.fileno())
+            execute_cmd(
+                [
+                    self.os_artifacts.kubectl,
+                    "--context",
+                    self.context_name,
+                    "apply",
+                    "-f",
+                    manifest_path,
+                ],
+                error_string=f"Unable to update secret {name}",
+                censor_command=True,
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if os.path.exists(manifest_path):
+                os.remove(manifest_path)
 
     def add_secret(self, secret_name: str, secret_value: str):
         cmd = [

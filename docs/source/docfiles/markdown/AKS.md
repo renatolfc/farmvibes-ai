@@ -303,6 +303,34 @@ Once the command runs, you will receive a hostname for the cluster, and the scri
 INFO - URL for your AKS Cluster is: https://test-build-1234-5678e9-dns.eastus2.cloudapp.azure.com
 ```
 
+Remote setup also generates a cluster-wide REST API bearer token. The token is stored in the
+`farmvibes-api-auth` Kubernetes Secret and copied to the private FarmVibes.AI configuration
+directory with owner-only permissions. It is not printed or stored in Terraform state. The default
+remote client reads it automatically.
+
+Updating a cluster created before API authentication enables authentication automatically:
+
+```bash
+farmvibes-ai remote update \
+  --region eastus \
+  --cert-email testemail@example.com \
+  --resource-group some-resource-group-name
+```
+
+The first update from the legacy Helm services stops those workloads, preserves and restores Redis
+workflow state, and resets transient RabbitMQ queues before installing the native services. Do not
+run this migration while workflows are active. A failed Redis restore is retried by the next update.
+
+An authorized operator can recover a missing local token file by running `farmvibes-ai remote
+status`. Rotate a token by adding `--rotate-api-token` to `remote update`; this invalidates clients
+using the old token and restarts the REST API deployment.
+
+The REST API remains reachable through its public TLS ingress, but requests other than health and
+API documentation require the bearer token. NSGs, private frontends, WAFs, and IP restrictions are
+useful additional controls, not substitutes for API authentication. A customer proxy such as Azure
+Application Gateway is optional and must transparently forward the standard `Authorization` header;
+FarmVibes.AI neither requires nor configures it.
+
 You can use to access the REST API and the FarmVibes.AI client, following the instructions in our [Client user guide](./CLIENT.md):
 
 ```python
@@ -378,4 +406,3 @@ foreach ($job in $jobs) {
 }
 ```
 </details>
-

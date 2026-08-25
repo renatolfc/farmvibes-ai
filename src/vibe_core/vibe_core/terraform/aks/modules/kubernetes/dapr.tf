@@ -68,7 +68,7 @@ resource "kubectl_manifest" "control-pubsub-sidecar" {
       - name: protocol
         value: amqp
       - name: hostname
-        value: ${data.kubernetes_service.rabbitmq.metadata.0.name}.${var.namespace}.svc.cluster.local
+        value: ${kubernetes_service.rabbitmq.metadata.0.name}.${var.namespace}.svc.cluster.local
       - name: port
         value: 5672
       - name: deleteWhenUnused
@@ -91,7 +91,7 @@ resource "kubectl_manifest" "control-pubsub-sidecar" {
         value: user
     EOF
 
-  depends_on = [helm_release.dapr, data.kubernetes_service.rabbitmq]
+  depends_on = [helm_release.dapr, kubernetes_stateful_set.rabbitmq]
 }
 
 resource "kubectl_manifest" "statestore-sidecar" {

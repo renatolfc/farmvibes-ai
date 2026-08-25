@@ -20,7 +20,9 @@ from typing import Dict, List, NamedTuple, Optional
 import pkg_resources
 import requests
 
-from .helper import execute_cmd
+from vibe_core.security import get_farmvibes_config_dir
+
+from .helper import execute_cmd, in_wsl
 from .logging import log
 
 MAJOR_MINOR_PATCH_REGEX = r"\b(?:v)?((?:\d+)(?:\.\d+)?(?:\.\d+)?)(?:(?:\+[a-zA-Z0-9]+)?)\b"
@@ -36,6 +38,69 @@ def download_file(url: str, local_path: str) -> None:
 
 class DependencyError(Exception):
     pass
+
+
+def secure_path(path: pathlib.Path, mode: int) -> None:
+    """Restrict a file or directory to the current user."""
+    is_windows = platform.system() == "Windows"
+    is_windows_mount = (
+        not is_windows
+        and in_wsl()
+        and path.is_absolute()
+        and len(path.parts) > 2
+        and path.parts[1] == "mnt"
+    )
+    if not is_windows and not is_windows_mount:
+        os.chmod(path, mode)
+        return
+    acl_path = (
+        subprocess.check_output(["wslpath", "-w", str(path)], text=True).strip()
+        if is_windows_mount
+        else str(path)
+    )
+
+    script = r"""
+param([string]$Path)
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$item = Get-Item -LiteralPath $Path -Force
+if ($item.PSIsContainer) {
+    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+} else {
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+}
+$acl.SetOwner($identity)
+$acl.SetAccessRuleProtection($true, $false)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $identity,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    $inheritance,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+)
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $Path -AclObject $acl
+"""
+    subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+            acl_path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def github_api_headers() -> Dict[str, str]:
+    """Authenticate GitHub API requests when Actions supplies a token."""
+    token = os.getenv("GITHUB_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 class InstallType(Enum):
@@ -122,6 +187,7 @@ class OSArtifacts:
     def __init__(self):
         self._local_terraform_path = ""
         self._aks_terraform_path = ""
+        self._kubectl_path = ""
 
     def check_dependencies(self, type: InstallType = InstallType.ALL) -> None:
         for dependency in self.REQUIRED_TOOLS.values():
@@ -237,22 +303,18 @@ class OSArtifacts:
 
     @property
     def config_dir(self):
-        if "FARMVIBES_AI_CONFIG_DIR" in os.environ:
-            ret = pathlib.Path(os.environ["FARMVIBES_AI_CONFIG_DIR"]).expanduser()
-        elif "XDG_HOME" in os.environ:
-            ret = pathlib.Path(os.environ["XDG_HOME"]).expanduser() / ".config" / "farmvibes-ai"
-        else:
-            ret = (pathlib.Path("~") / ".config" / "farmvibes-ai").expanduser()
+        ret = get_farmvibes_config_dir()
         if not ret.exists():
             log(f"Creating config directory {ret}")
             ret.mkdir(exist_ok=True, parents=True)
+        secure_path(ret, 0o700)
         return ret
 
     @property
     def private_config_dir(self):
         ret = self.config_dir / "private"
         ret.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(ret, 0o700)
+        secure_path(ret, 0o700)
         return ret
 
     @property
@@ -293,7 +355,7 @@ class OSArtifacts:
 
     @property
     def kubectl(self) -> str:
-        return self._binary("kubectl")
+        return self._kubectl_path or self._binary("kubectl")
 
     @property
     def kubelogin(self) -> str:
@@ -420,6 +482,31 @@ class OSArtifacts:
     def install_kubectl(self) -> None:
         installer = KubectlInstaller(self.config_dir)
         installer.install()
+
+    @staticmethod
+    def kubectl_is_compatible(client_version: str, server_version: str) -> bool:
+        client = [int(part) for part in client_version.split(".")[:2]]
+        server = [int(part) for part in server_version.split(".")[:2]]
+        return client[0] == server[0] and abs(client[1] - server[1]) <= 1
+
+    def ensure_compatible_kubectl(self, server_version: str) -> None:
+        dependency = self.REQUIRED_TOOLS["kubectl"]
+        current = self.get_version(dependency, pathlib.Path(self.kubectl))
+        if self.kubectl_is_compatible(current, server_version):
+            return
+        server_minor = ".".join(server_version.split(".")[:2])
+        log(
+            f"kubectl {current} is incompatible with Kubernetes {server_version}; "
+            f"installing the latest {server_minor} client"
+        )
+        installer = KubectlInstaller(self.config_dir, server_minor)
+        installer.install()
+        self._kubectl_path = str(self.config_dir / installer.cli_name)
+        installed = self.get_version(dependency, pathlib.Path(self._kubectl_path))
+        if not self.kubectl_is_compatible(installed, server_version):
+            raise DependencyError(
+                f"kubectl {installed} is incompatible with Kubernetes {server_version}"
+            )
 
     def install_kubelogin(self) -> None:
         installer = KubeloginInstaller(self.config_dir)
@@ -565,7 +652,8 @@ class PrivateCliToolInstaller(Installer, ABC):
 
     @property
     def arch(self) -> str:
-        return "amd64" if platform.machine().lower() in {"x86_64", "amd64"} else platform.machine()
+        arch = platform.machine().lower()
+        return {"x86_64": "amd64", "aarch64": "arm64"}.get(arch, arch)
 
     def install_helper(self, url: str, file_name: str) -> None:
         log(f"Downloading {file_name} from {url}")
@@ -632,7 +720,9 @@ class TerraformInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.TERRAFORM_RELEASE_URL)
+            response = requests.get(
+                self.TERRAFORM_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"].replace("v", "")
         except Exception:
@@ -657,13 +747,24 @@ class TerraformInstaller(PrivateCliToolInstaller):
 
 
 class KubectlInstaller(PrivateCliToolInstaller):
-    KUBECTL_RELEASE_URL = "https://storage.googleapis.com/kubernetes-release/release/stable.txt"
-    KUBECTL_BASE_URL = "https://storage.googleapis.com/kubernetes-release/release"
+    KUBECTL_RELEASE_URL = "https://dl.k8s.io/release/stable.txt"
+    KUBECTL_BASE_URL = "https://dl.k8s.io/release"
+
+    def __init__(
+        self, config_dir: Optional[pathlib.Path], server_minor: str = ""
+    ) -> None:
+        super().__init__(config_dir)
+        self.server_minor = server_minor
 
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.KUBECTL_RELEASE_URL)
+            release_url = (
+                f"{self.KUBECTL_BASE_URL}/stable-{self.server_minor}.txt"
+                if self.server_minor
+                else self.KUBECTL_RELEASE_URL
+            )
+            response = requests.get(release_url)
             response.raise_for_status()
             return response.text.strip()
         except Exception:
@@ -695,7 +796,9 @@ class HelmInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.HELM_RELEASE_URL)
+            response = requests.get(
+                self.HELM_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:
@@ -726,7 +829,9 @@ class K3dInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.K3D_RELEASE_URL)
+            response = requests.get(
+                self.K3D_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:
@@ -757,7 +862,9 @@ class KubeloginInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.KUBELOGIN_RELEASE_URL)
+            response = requests.get(
+                self.KUBELOGIN_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:
@@ -811,7 +918,9 @@ class DaprInstaller(PrivateCliToolInstaller):
     @property
     def latest_release(self) -> str:
         try:
-            response = requests.get(self.DAPR_RELEASE_URL)
+            response = requests.get(
+                self.DAPR_RELEASE_URL, headers=github_api_headers()
+            )
             response.raise_for_status()
             return response.json()["tag_name"]
         except Exception:

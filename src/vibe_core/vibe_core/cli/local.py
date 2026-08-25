@@ -109,9 +109,12 @@ def find_redis_master(kubectl: KubectlWrapper) -> Tuple[str, ...]:
     )
 
 
-def needs_service_migration(kubectl: KubectlWrapper) -> bool:
+def needs_service_migration(
+    kubectl: KubectlWrapper,
+    services: Tuple[str, ...] = ("redis-master", "rabbitmq"),
+) -> bool:
     with kubectl.context():
-        for name in ("redis-master", "rabbitmq"):
+        for name in services:
             stateful_set = kubectl.get_or_none("statefulset", name)
             if stateful_set is None:
                 continue
