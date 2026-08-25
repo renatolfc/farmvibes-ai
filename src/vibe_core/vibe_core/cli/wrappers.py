@@ -87,13 +87,15 @@ def on_windows() -> bool:
 class TerraformWrapper:
     STATE_CONTAINER_NAME = "terraform-state"
     INFRA_STATE_FILE = "infra.tfstate"
+    SERVICES_STATE_FILE = "services.tfstate"
+    LEGACY_SERVICES_STATE_SECRET = "tfstate-default-terraform-state"
     ANSI_ESCAPE_PAT = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
     REPLACEMENT_PAT = re.compile(r"#\s+(.*)\s+must\s+be\s+replaced")
     REPLACEMENT_SUBSTRINGS = [
         "cosmosdb",
         "storageaccount",
     ]
-    PLUGIN_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "farmvibes-ai", "terraform")
+    PLUGIN_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "farmvibes-ai", "opentofu")
 
     def __init__(
         self,
@@ -130,7 +132,7 @@ class TerraformWrapper:
         action = "plan" if plan else "destroy" if destroy else "apply"
         log(
             f"{'Planning' if plan else 'Destroying' if destroy else 'Applying'} "
-            f"terraform in {working_directory}"
+            f"OpenTofu in {working_directory}"
         )
         command = [
             self.os_artifacts.terraform,
@@ -159,7 +161,7 @@ class TerraformWrapper:
             check_return_code=True,
             check_empty_result=False,
             error_string=(
-                f"Failed to {action} terraform resources "
+                f"Failed to {action} OpenTofu resources "
                 f"in {working_directory}"
             ),
             capture_output=True,
@@ -182,7 +184,7 @@ class TerraformWrapper:
             ],
             check_return_code=True,
             check_empty_result=False,
-            error_string=f"Failed to list terraform state in {working_directory}",
+            error_string=f"Failed to list OpenTofu state in {working_directory}",
             capture_output=True,
             env_vars={
                 "ARM_ENVIRONMENT": self.environment,
@@ -255,11 +257,111 @@ class TerraformWrapper:
             command,
             True,
             False,
-            f"Failed to get terraform results from {working_directory}",
+            f"Failed to get OpenTofu results from {working_directory}",
             censor_output=True,
             env_vars=env_vars,
         )
         return json.loads(output)
+
+    def _pull_state(self, working_directory: str) -> Dict[str, Any]:
+        output = execute_cmd(
+            [
+                self.os_artifacts.terraform,
+                f"-chdir={working_directory}",
+                "state",
+                "pull",
+            ],
+            check_return_code=True,
+            check_empty_result=False,
+            error_string=f"Failed to pull OpenTofu state from {working_directory}",
+            capture_output=True,
+            censor_output=True,
+            env_vars={
+                "ARM_ENVIRONMENT": self.environment,
+                "TF_PLUGIN_CACHE_DIR": self.PLUGIN_CACHE_DIR,
+            },
+        )
+        return json.loads(output) if output else {}
+
+    def _pull_legacy_services_state(
+        self,
+        kubernetes_config_path: str,
+        kubernetes_config_context: str,
+    ) -> Dict[str, Any]:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            Path(temporary_directory, "main.tf").write_text(
+                (
+                    'terraform {\n'
+                    '  required_version = ">=1.6.0"\n'
+                    '  backend "kubernetes" {}\n'
+                    '}\n'
+                ),
+                encoding="utf-8",
+            )
+            self.init(
+                temporary_directory,
+                refresh_creds=False,
+                backend_config={
+                    "config_path": kubernetes_config_path,
+                    "config_context": kubernetes_config_context,
+                    "secret_suffix": "terraform-state",
+                },
+                cleanup_state=True,
+            )
+            return self._pull_state(temporary_directory)
+
+    def _push_state(
+        self,
+        working_directory: str,
+        state: Dict[str, Any],
+    ) -> None:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=self.os_artifacts.private_config_dir,
+            suffix=".tfstate",
+        ) as state_file:
+            secure_path(Path(state_file.name), 0o600)
+            json.dump(state, state_file)
+            state_file.flush()
+            os.fsync(state_file.fileno())
+            execute_cmd(
+                [
+                    self.os_artifacts.terraform,
+                    f"-chdir={working_directory}",
+                    "state",
+                    "push",
+                    "-force",
+                    state_file.name,
+                ],
+                check_return_code=True,
+                check_empty_result=False,
+                error_string="Failed to migrate services state to Azure Blob",
+                capture_output=True,
+                censor_command=True,
+                censor_output=True,
+                env_vars={
+                    "ARM_ENVIRONMENT": self.environment,
+                    "TF_PLUGIN_CACHE_DIR": self.PLUGIN_CACHE_DIR,
+                },
+            )
+
+    def _delete_legacy_services_state(
+        self,
+        cluster_name: str,
+        kubernetes_config_context: str,
+    ) -> None:
+        kubectl = KubectlWrapper(
+            self.os_artifacts,
+            cluster_name,
+            config_context=kubernetes_config_context,
+        )
+        with kubectl.context():
+            kubectl.delete(
+                "secret",
+                self.LEGACY_SERVICES_STATE_SECRET,
+                ignore_not_found=True,
+            )
 
     def init(
         self,
@@ -268,7 +370,7 @@ class TerraformWrapper:
         backend_config: Dict[str, str] = {},
         cleanup_state: bool = False,
     ):
-        log(f"Initializing terraform in {working_directory}")
+        log(f"Initializing OpenTofu in {working_directory}")
         if refresh_creds:
             assert self.az is not None, "AzureCliWrapper must be provided to refresh credentials"
             self.az.refresh_az_creds()
@@ -310,7 +412,7 @@ class TerraformWrapper:
                 command,
                 True,
                 False,
-                f"Failed to initialize terraform in {working_directory}",
+                f"Failed to initialize OpenTofu in {working_directory}",
                 env_vars=env_vars,
             )
 
@@ -361,7 +463,7 @@ class TerraformWrapper:
         is_update: bool = False,
     ):
         infra_directory = os.path.join(self.os_artifacts.aks_directory, "modules", "infra")
-        log("Executing terraform to build out infrastructure (this may take up to 30 minutes)...")
+        log("Executing OpenTofu to build out infrastructure (this may take up to 30 minutes)...")
         backend_config = {
             "storage_account_name": storage_name,
             "resource_group_name": resource_group,
@@ -395,7 +497,7 @@ class TerraformWrapper:
             needs_restart = False
             if replacements:
                 log(
-                    f"Terraform plan requires replacement of resources {', '.join(replacements)}..."
+                    f"OpenTofu plan requires replacement of resources {', '.join(replacements)}..."
                 )
                 proceed = True
                 needs_restart = True
@@ -414,7 +516,7 @@ class TerraformWrapper:
                 if not proceed:
                     raise RuntimeError("Cancelation Requested")
                 else:
-                    log("Continuing with terraform apply...")
+                    log("Continuing with OpenTofu apply...")
             apply = self.apply(infra_directory, state_file, variables, plan_file=plan_file.name)
             if is_update and (needs_restart or "azurerm_key_vault_secret" in apply):
                 kubectl = KubectlWrapper(self.os_artifacts, cluster_name)
@@ -448,6 +550,7 @@ class TerraformWrapper:
         cleanup_state: bool = False,
         migrate_legacy_services: bool = False,
         on_legacy_destroy: Optional[Callable[[], None]] = None,
+        before_apply: Optional[Callable[[], None]] = None,
     ):
         # Do kubernetes infra now
         kubernetes_directory = os.path.join(
@@ -502,6 +605,8 @@ class TerraformWrapper:
                 kubernetes_config_context,
                 on_legacy_destroy,
             )
+        if before_apply is not None:
+            before_apply()
         self.apply(kubernetes_directory, state_file, variables)
 
         return self.get_output(kubernetes_directory, state_file)
@@ -521,19 +626,56 @@ class TerraformWrapper:
         otel_service_name: str,
         worker_replicas: int,
         log_level: str,
+        backend_storage_name: str,
+        backend_container_name: str,
+        backend_storage_access_key: str,
         cleanup_state: bool = False,
+        migrate_state: bool = False,
     ):
         services_directory = os.path.join(self.os_artifacts.aks_directory, "..", "services")
         backend_config = {
-            "config_path": kubernetes_config_path,
-            "config_context": kubernetes_config_context,
+            "storage_account_name": backend_storage_name,
+            "resource_group_name": resource_group,
+            "container_name": backend_container_name,
+            "access_key": backend_storage_access_key,
         }
+        legacy_state: Dict[str, Any] = {}
+        target_exists = False
+        if migrate_state:
+            assert self.az is not None
+            target_exists = self.az.blob_exists(
+                backend_storage_name,
+                backend_storage_access_key,
+                backend_container_name,
+                self.SERVICES_STATE_FILE,
+            )
+            if not target_exists:
+                legacy_state = self._pull_legacy_services_state(
+                    kubernetes_config_path,
+                    kubernetes_config_context,
+                )
         self.init(
             services_directory,
             backend_config=backend_config,
             cleanup_state=cleanup_state,
             refresh_creds=True,
         )
+        if legacy_state.get("resources"):
+            self._push_state(services_directory, legacy_state)
+            migrated_state = self._pull_state(services_directory)
+            if migrated_state.get("lineage") != legacy_state.get("lineage"):
+                raise RuntimeError("Services state migration verification failed")
+            self._delete_legacy_services_state(
+                cluster_name,
+                kubernetes_config_context,
+            )
+        elif target_exists:
+            target_state = self._pull_state(services_directory)
+            if target_state.get("resources"):
+                self._delete_legacy_services_state(
+                    cluster_name,
+                    kubernetes_config_context,
+                )
         variables = {
             "namespace": "default",
             "prefix": cluster_name,
@@ -553,7 +695,7 @@ class TerraformWrapper:
         }
 
         state_file = self.os_artifacts.get_terraform_file(
-            "services.tfstate", cluster_name, resource_group
+            self.SERVICES_STATE_FILE, cluster_name, resource_group
         )
         self.apply(services_directory, state_file, variables)
 
@@ -612,7 +754,7 @@ class TerraformWrapper:
 
     def list_workspaces(self) -> List[str]:
         cmd = [self.os_artifacts.terraform, "workspace", "list"]
-        error = "Couldn't list terraform workspaces"
+        error = "Couldn't list OpenTofu workspaces"
         return (
             execute_cmd(
                 cmd,
@@ -627,7 +769,7 @@ class TerraformWrapper:
 
     def get_workspace(self) -> str:
         cmd = [self.os_artifacts.terraform, "workspace", "show"]
-        error = "Couldn't get terraform workspace"
+        error = "Couldn't get OpenTofu workspace"
         return execute_cmd(
             cmd, True, True, error, capture_output=True, subprocess_log_level="debug"
         )
@@ -635,9 +777,9 @@ class TerraformWrapper:
     def set_workspace(self, workspace: str):
         workspaces = self.list_workspaces()
         if workspace not in workspaces:
-            log(f"Terraform workspace {workspace} does not exist. Creating it...", level="debug")
+            log(f"OpenTofu workspace {workspace} does not exist. Creating it...", level="debug")
             cmd = [self.os_artifacts.terraform, "workspace", "new", workspace]
-            error = f"Couldn't create terraform workspace {workspace}"
+            error = f"Couldn't create OpenTofu workspace {workspace}"
             execute_cmd(
                 cmd,
                 check_return_code=False,
@@ -646,32 +788,32 @@ class TerraformWrapper:
                 subprocess_log_level="debug",
             )
         else:
-            log(f"Terraform workspace {workspace} already exists. Selecting it...", level="debug")
+            log(f"OpenTofu workspace {workspace} already exists. Selecting it...", level="debug")
 
         cmd = [self.os_artifacts.terraform, "workspace", "select", workspace]
-        error = f"Couldn't select terraform workspace {workspace}"
+        error = f"Couldn't select OpenTofu workspace {workspace}"
         execute_cmd(cmd, True, False, error, capture_output=False, subprocess_log_level="debug")
 
     def delete_workspace(self, workspace: str):
         workspaces = self.list_workspaces()
         if workspace not in workspaces:
             log(
-                f"Terraform workspace {workspace} does not exist. Nothing to delete...",
+                f"OpenTofu workspace {workspace} does not exist. Nothing to delete...",
                 level="debug",
             )
             return
         cmd = [self.os_artifacts.terraform, "workspace", "delete", workspace]
-        error = f"Couldn't delete terraform workspace {workspace}"
+        error = f"Couldn't delete OpenTofu workspace {workspace}"
         try:
             execute_cmd(cmd, True, False, error, capture_output=False, subprocess_log_level="debug")
         except Exception as e:
-            log(f"Couldn't delete terraform workspace {workspace}: {e}", level="debug")
+            log(f"Couldn't delete OpenTofu workspace {workspace}: {e}", level="debug")
 
     @contextmanager
     def workspace(self, workspace_name: str):
         current_workspace = self.get_workspace()
-        log(f"Current terraform workspace is {current_workspace}", level="debug")
-        log(f"Setting terraform workspace to {workspace_name}", level="debug")
+        log(f"Current OpenTofu workspace is {current_workspace}", level="debug")
+        log(f"Setting OpenTofu workspace to {workspace_name}", level="debug")
         if current_workspace != workspace_name:
             self.set_workspace(workspace_name)
         try:
@@ -704,7 +846,7 @@ class TerraformWrapper:
                 results = self.get_output(infra_directory, state_file)
                 return results
         except Exception as e:
-            log(f"Error getting infra results with terraform: {e}", level="error")
+            log(f"Error getting infra results with OpenTofu: {e}", level="error")
             return {}
 
     def get_url_from_terraform_output(self, cluster_name: str, resource_group: str) -> str:
@@ -723,29 +865,29 @@ class TerraformWrapper:
         try:
             assert self.az is not None, "Azure client not initialized"
             storage_name, container_name, key = self.az.ensure_azurerm_backend("")
-            log(f"Getting terraform state from {storage_name}/{container_name}")
+            log(f"Getting OpenTofu state from {storage_name}/{container_name}")
             state = json.loads(
                 self.az.download_blob(storage_name, container_name, self.INFRA_STATE_FILE, key=key)
             )
             return state
         except Exception as e:
-            log(f"Error getting storage account name from terraform state file: {e}", level="error")
+            log(f"Error getting storage account name from OpenTofu state file: {e}", level="error")
             return {}
 
     def get_storage_account_name(self):
         state = self._get_infra_state()
         try:
-            log("Extracting storage account name from terraform state", level="debug")
+            log("Extracting storage account name from OpenTofu state", level="debug")
             storage_account = state["outputs"]["storage_account_name"]["value"]
             return storage_account
         except Exception as e:
-            log(f"Error getting storage account name from terraform state: {e}", level="error")
+            log(f"Error getting storage account name from OpenTofu state: {e}", level="error")
             return ""
 
     def get_current_core_count(self) -> Tuple[int, int]:
         state = self._get_infra_state()
         try:
-            log("Extracting current core count from terraform state", level="debug")
+            log("Extracting current core count from OpenTofu state", level="debug")
             max_workers = int(state["outputs"]["max_worker_nodes"]["value"])
             max_default = int(state["outputs"]["max_default_nodes"]["value"])
             return (
@@ -753,7 +895,7 @@ class TerraformWrapper:
                 max_default * CPUS_REQUIRED[DEFAULT_NODE_CPU_NAME],
             )
         except Exception as e:
-            log(f"Error getting current core count from terraform state: {e}", level="error")
+            log(f"Error getting current core count from OpenTofu state: {e}", level="error")
             return 0, 0
 
 
@@ -1109,6 +1251,36 @@ class AzureCliWrapper:
             return False
         return True
 
+    def harden_storage_account(self, storage_name: str) -> None:
+        execute_cmd(
+            [
+                self.os_artifacts.az,
+                "storage",
+                "account",
+                "blob-service-properties",
+                "update",
+                "--account-name",
+                storage_name,
+                "--resource-group",
+                self.resource_group,
+                "--enable-versioning",
+                "true",
+                "--enable-delete-retention",
+                "true",
+                "--delete-retention-days",
+                "14",
+                "--enable-container-delete-retention",
+                "true",
+                "--container-delete-retention-days",
+                "14",
+            ],
+            check_return_code=True,
+            check_empty_result=False,
+            error_string="Couldn't harden the OpenTofu state storage account",
+            capture_output=True,
+            subprocess_log_level="debug",
+        )
+
     def get_storage_account_key(self, storage_name: str):
         cmd = [
             self.os_artifacts.az,
@@ -1187,6 +1359,38 @@ class AzureCliWrapper:
                 return False
 
         return True
+
+    def blob_exists(
+        self,
+        storage_name: str,
+        key: str,
+        container_name: str,
+        blob_name: str,
+    ) -> bool:
+        output = execute_cmd(
+            [
+                self.os_artifacts.az,
+                "storage",
+                "blob",
+                "exists",
+                "--account-name",
+                storage_name,
+                "--account-key",
+                key,
+                "--container-name",
+                container_name,
+                "--name",
+                blob_name,
+                "--output",
+                "json",
+            ],
+            check_return_code=True,
+            check_empty_result=True,
+            error_string=f"Couldn't check OpenTofu state blob {blob_name}",
+            censor_command=True,
+            censor_output=True,
+        )
+        return bool(json.loads(output)["exists"])
 
     def download_blob(
         self,
@@ -1296,9 +1500,10 @@ class AzureCliWrapper:
         storage_name = self.storage_name
         if not any(account["name"] == storage_name for account in accounts):
             self.create_storage_account(location, storage_name)
+        self.harden_storage_account(storage_name)
         key = self.get_storage_account_key(storage_name)
         if not self.ensure_container_exists(storage_name, key, container_name):
-            log("Couldn't create storage container for Terraform backend.", level="error")
+            log("Couldn't create storage container for OpenTofu backend.", level="error")
             return "", "", ""
         return storage_name, container_name, key
 
@@ -1506,9 +1711,12 @@ class KubectlWrapper:
         name: str,
         cluster_name: str = "",
         ignore_not_found: bool = False,
+        namespace: str = "",
     ):
         cluster_name = self._actual_cluster_name(cluster_name)
         cmd = [self.os_artifacts.kubectl, "delete", kind, name]
+        if namespace:
+            cmd.extend(["--namespace", namespace])
         if ignore_not_found:
             cmd.append("--ignore-not-found=true")
         execute_cmd(
@@ -1854,7 +2062,7 @@ class KubectlWrapper:
             )
         )
 
-    def get_or_none(self, kind: str, name: str):
+    def get_or_none(self, kind: str, name: str, namespace: str = ""):
         cmd = [
             self.os_artifacts.kubectl,
             "get",
@@ -1864,6 +2072,8 @@ class KubectlWrapper:
             "json",
             "--ignore-not-found",
         ]
+        if namespace:
+            cmd.extend(["--namespace", namespace])
         result = execute_cmd(
             cmd,
             error_string=f"Unable to get {kind} {name}",
@@ -1872,10 +2082,16 @@ class KubectlWrapper:
         )
         return json.loads(result) if result else None
 
-    def wait_for_delete(self, kind: str, name: str, timeout_s: int = 120):
+    def wait_for_delete(
+        self,
+        kind: str,
+        name: str,
+        timeout_s: int = 120,
+        namespace: str = "",
+    ):
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            if self.get_or_none(kind, name) is None:
+            if self.get_or_none(kind, name, namespace) is None:
                 return
             time.sleep(1)
         raise ValueError(f"Timed out waiting for {kind} {name} to be deleted")
@@ -2264,15 +2480,118 @@ class DockerWrapper:
         return result
 
 
+class CertManagerWrapper:
+    TARGET_VERSION = "1.21.1"
+    STABLE_MINOR_VERSIONS = (
+        "1.13.6",
+        "1.14.7",
+        "1.15.5",
+        "1.16.5",
+        "1.17.4",
+        "1.18.6",
+        "1.19.6",
+        "1.20.3",
+        TARGET_VERSION,
+    )
+
+    def __init__(
+        self,
+        os_artifacts: OSArtifacts,
+        kubectl: KubectlWrapper,
+    ) -> None:
+        self.os_artifacts = os_artifacts
+        self.kubectl = kubectl
+
+    @staticmethod
+    def _version_tuple(version: str) -> Tuple[int, ...]:
+        return tuple(map(int, version.lstrip("v").split(".")))
+
+    def version(self) -> Optional[str]:
+        with self.kubectl.context(self.kubectl.cluster_name):
+            output = execute_cmd(
+                [
+                    self.os_artifacts.helm,
+                    "list",
+                    "--namespace",
+                    "kube-system",
+                    "--filter",
+                    "^cert-manager$",
+                    "--output",
+                    "json",
+                ],
+                check_empty_result=False,
+                error_string="Unable to get cert-manager version",
+                subprocess_log_level="debug",
+            )
+        releases = json.loads(output or "[]")
+        if not releases:
+            return None
+        return releases[0]["app_version"].lstrip("v")
+
+    def upgrade_path(self) -> List[str]:
+        current = self.version()
+        if current is None:
+            return []
+        current_tuple = self._version_tuple(current)
+        target_tuple = self._version_tuple(self.TARGET_VERSION)
+        return [
+            version
+            for version in self.STABLE_MINOR_VERSIONS
+            if current_tuple < self._version_tuple(version) <= target_tuple
+        ]
+
+    def needs_upgrade(self) -> bool:
+        return bool(self.upgrade_path())
+
+    def upgrade_sequentially(self) -> None:
+        for version in self.upgrade_path():
+            crd_flag = "installCRDs" if self._version_tuple(version) < (1, 15) else "crds.enabled"
+            log(f"Upgrading cert-manager to {version}")
+            with self.kubectl.context(self.kubectl.cluster_name):
+                execute_cmd(
+                    [
+                        self.os_artifacts.helm,
+                        "upgrade",
+                        "cert-manager",
+                        "cert-manager",
+                        "--repo",
+                        "https://charts.jetstack.io",
+                        "--namespace",
+                        "kube-system",
+                        "--version",
+                        f"v{version}",
+                        "--set",
+                        f"{crd_flag}=true",
+                        "--set",
+                        r"nodeSelector.kubernetes\.io/os=linux",
+                        "--atomic",
+                        "--timeout",
+                        "10m",
+                    ],
+                    check_empty_result=False,
+                    error_string=f"Unable to upgrade cert-manager to {version}",
+                    subprocess_log_level="debug",
+                )
+
+
 class DaprWrapper:  # DaprWrapr 🫠
     VERSION_STRING = "VERSION"
     CRD_BASE = "https://raw.githubusercontent.com/dapr/dapr/v{}/charts/dapr/crds/"
+    STABLE_MINOR_VERSIONS = (
+        "1.14.5",
+        "1.15.14",
+        "1.16.19",
+        "1.17.13",
+        "1.18.3",
+    )
     CRD_FILES = [
         "components.yaml",
         "configuration.yaml",
         "subscription.yaml",
         "resiliency.yaml",
         "httpendpoints.yaml",
+        "mcpservers.yaml",
+        "workflowaccesspolicy.yaml",
     ]
 
     def __init__(
@@ -2320,6 +2639,22 @@ class DaprWrapper:  # DaprWrapr 🫠
             [v < version_tuple for v in current_versions_tuples if v > (1, 0, 0)]
         )
 
+    def upgrade_path(self) -> List[str]:
+        current_versions = [
+            tuple(map(int, version.split(".")))
+            for version in self.version()
+            if tuple(map(int, version.split("."))) > (1, 0, 0)
+        ]
+        if not current_versions:
+            return []
+        current = min(current_versions)
+        target = tuple(map(int, self._target_version().split(".")))
+        return [
+            version
+            for version in self.STABLE_MINOR_VERSIONS
+            if current < tuple(map(int, version.split("."))) <= target
+        ]
+
     def url_exists(self, url: str) -> bool:
         try:
             response = requests.head(url)
@@ -2327,29 +2662,38 @@ class DaprWrapper:  # DaprWrapr 🫠
         except requests.exceptions.RequestException:
             return False
 
-    def upgrade_crds(self):
+    def upgrade_crds(self, version: Optional[str] = None):
         # Upgrading dapr is a two-stage process.
-        # First, we upgrade the CRDs, then, we use terraform to upgrade the dapr runtime.
+        # First, we upgrade the CRDs, then OpenTofu converges the Dapr chart.
         status = []
+        version = version or self._target_version()
         for crd in self.CRD_FILES:
-            url = self.CRD_BASE.format(self._target_version()) + crd
+            url = self.CRD_BASE.format(version) + crd
             if not self.url_exists(url):
                 log(f"CRD {crd} not found at {url}, ignoring it", level="warning")
                 continue
             status.append(self.kubectl.apply_or_replace(url))
         return all(status)
 
-    def upgrade(self):
+    def upgrade(self, version: Optional[str] = None):
+        version = version or self._target_version()
         cmd = [
             self.os_artifacts.dapr,
             "upgrade",
             "-k",
-            f"--runtime-version={self._target_version()}",
+            f"--runtime-version={version}",
         ]
-        log(f"Upgrading Dapr to version {self._target_version()}")
+        log(f"Upgrading Dapr to version {version}")
         with self.kubectl.context(self.kubectl.cluster_name):
             execute_cmd(
                 cmd,
                 error_string="Unable to upgrade Dapr",
                 subprocess_log_level="debug",
             )
+
+    def upgrade_sequentially(self) -> bool:
+        for version in self.upgrade_path():
+            if not self.upgrade_crds(version):
+                return False
+            self.upgrade(version)
+        return True

@@ -10,28 +10,32 @@ resource "azurerm_kubernetes_cluster" "kubernetes" {
   location                  = var.location
   resource_group_name       = var.resource_group_name
   dns_prefix                = "${var.prefix}kbsdns"
-  automatic_channel_upgrade = "patch"
+  automatic_upgrade_channel = "patch"
   oidc_issuer_enabled       = true
 
   identity {
     type = "SystemAssigned"
   }
 
+  node_provisioning_profile {
+    mode = "Manual"
+  }
+
   role_based_access_control_enabled = true
 
   azure_active_directory_role_based_access_control {
-    managed            = true
     azure_rbac_enabled = true
+    tenant_id          = var.tenantId
   }
 
   default_node_pool {
-    name                = "default"
-    enable_auto_scaling = true
-    min_count           = 2
-    max_count           = local.default_node_pool_max_count
-    vm_size             = "Standard_B4ms"
-    os_sku              = "Mariner"
-    vnet_subnet_id      = azurerm_subnet.aks-subnet.id
+    name                 = "default"
+    auto_scaling_enabled = true
+    min_count            = 2
+    max_count            = local.default_node_pool_max_count
+    vm_size              = "Standard_B4ms"
+    os_sku               = "AzureLinux3"
+    vnet_subnet_id       = azurerm_subnet.aks-subnet.id
   }
 
   storage_profile {
@@ -57,10 +61,10 @@ resource "azurerm_kubernetes_cluster_node_pool" "kubernetes-worker" {
   name                  = "worker"
   kubernetes_cluster_id = azurerm_kubernetes_cluster.kubernetes.id
   vm_size               = "Standard_D8s_v3"
-  enable_auto_scaling   = true
+  auto_scaling_enabled  = true
   min_count             = 1
   max_count             = var.max_worker_nodes
-  os_sku                = "Mariner"
+  os_sku                = "AzureLinux3"
   depends_on            = [azurerm_kubernetes_cluster.kubernetes]
 
   lifecycle {

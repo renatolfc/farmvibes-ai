@@ -5,7 +5,7 @@ FarmVibes.AI, detailing the main components, configuration options, and
 customization possibilities.
 
 The primary focus of this guide is to help users understand the structure and
-organization of the Terraform scripts used to create and configure the remote
+organization of the OpenTofu scripts used to create and configure the remote
 cluster and its associated Azure cloud components.
 
 ## Requirements
@@ -86,7 +86,7 @@ Once these requirements are met, you can follow the instructions on how to use
 
 Since the FarmVibes.AI remote management script needs to provision new
 resources on Azure, it needs access to various [Azure
-Providers](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs).
+Providers](https://registry.opentofu.org/providers/hashicorp/azurerm/latest).
 The script itself is able to register each required provider. As of the time of
 writing of this document, the required providers are:
 
@@ -161,7 +161,7 @@ account by using a deterministic function that hashes the cluster name and the
 resource group name.
 
 Once the resource group and the metadata storage account exist, the script then
-uses [TerraForm](https://www.terraform.io) to provision the infrastructure,
+uses [OpenTofu](https://opentofu.org/) to provision the infrastructure,
 which takes place in three levels, described below.
 
 ### (3) Infrastructure
@@ -182,6 +182,7 @@ which takes place in three levels, described below.
   and scaling of containerized applications using Kubernetes. In this project,
   an AKS cluster is created with the specified configurations, enabling you
   to deploy and manage your containerized services with ease.
+  Both node pools use Azure Linux 3.
 
 - [**Storage Account**](https://learn.microsoft.com/en-us/azure/storage/):
   a cloud storage service that provides scalable, durable,
@@ -210,6 +211,7 @@ the kubernetes components, which are:
 - [RabbitMQ](https://www.rabbitmq.com/) for messaging between FarmVibes.AI services
 - [Dapr (Distributed Application Runtime)](https://dapr.io/) for abstracting service invocation and
   messaging
+- [ingress-nginx](https://kubernetes.github.io/ingress-nginx/) for the public TLS ingress
 - A persistent volume that uses the storage account created in the previous
   step as backing store
 - Open telemetry service for collecting telemetry data from services
@@ -305,7 +307,7 @@ INFO - URL for your AKS Cluster is: https://test-build-1234-5678e9-dns.eastus2.c
 
 Remote setup also generates a cluster-wide REST API bearer token. The token is stored in the
 `farmvibes-api-auth` Kubernetes Secret and copied to the private FarmVibes.AI configuration
-directory with owner-only permissions. It is not printed or stored in Terraform state. The default
+directory with owner-only permissions. It is not printed or stored in OpenTofu state. The default
 remote client reads it automatically.
 
 Updating a cluster created before API authentication enables authentication automatically:
@@ -320,6 +322,20 @@ farmvibes-ai remote update \
 The first update from the legacy Helm services stops those workloads, preserves and restores Redis
 workflow state, and resets transient RabbitMQ queues before installing the native services. Do not
 run this migration while workflows are active. A failed Redis restore is retried by the next update.
+
+Infrastructure updates also perform the following one-time migrations:
+
+- Existing Terraform state remains compatible and is read by OpenTofu.
+- The services state moves from the in-cluster Kubernetes Secret backend to the cluster's Azure
+  Blob backend. The old Secret is deleted only after the Azure state lineage is verified.
+- The Blob backend enables versioning and 14-day blob/container soft delete.
+- Dapr and cert-manager advance one supported minor version at a time before the final chart
+  versions are applied.
+- The NGINX Inc controller is replaced by community ingress-nginx using the
+  `nginx-community` IngressClass.
+- AKS node pools move from Mariner to Azure Linux 3, which can roll/reimage nodes.
+
+Allow a maintenance window for remote updates and make sure no workflows are running.
 
 An authorized operator can recover a missing local token file by running `farmvibes-ai remote
 status`. Rotate a token by adding `--rotate-api-token` to `remote update`; this invalidates clients

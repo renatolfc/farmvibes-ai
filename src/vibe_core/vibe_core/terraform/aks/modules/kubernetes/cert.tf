@@ -6,17 +6,18 @@ resource "helm_release" "letsencrypt" {
   repository = "https://charts.jetstack.io"
   chart      = "cert-manager"
   namespace  = "kube-system"
-  version    = "1.12.2"
+  version    = "v1.21.1"
 
-  set {
-    name  = "installCRDs"
-    value = "true"
-  }
-
-  set {
-    name  = "nodeSelector.kubernetes\\.io/os"
-    value = "linux"
-  }
+  set = [
+    {
+      name  = "crds.enabled"
+      value = "true"
+    },
+    {
+      name  = "nodeSelector.kubernetes\\.io/os"
+      value = "linux"
+    }
+  ]
 
   depends_on = [helm_release.nginx-ingress]
 }
@@ -37,7 +38,7 @@ resource "kubectl_manifest" "clusterissuer" {
         solvers:
         - http01:
             ingress:
-              class: nginx
+              class: nginx-community
               podTemplate:
                 spec:
                   nodeSelector:

@@ -32,7 +32,7 @@ resource "kubernetes_secret" "user-storage-secret" {
 
 resource "kubernetes_secret" "monitor_instrumentation_key_secret" {
   metadata {
-    name = "monitor-instrumentation-key-secret"
+    name      = "monitor-instrumentation-key-secret"
     namespace = var.namespace
   }
 
@@ -40,7 +40,7 @@ resource "kubernetes_secret" "monitor_instrumentation_key_secret" {
     monitor_instrumentation_key = var.monitor_instrumentation_key
   }
 
-  type = "Opaque"
+  type       = "Opaque"
   depends_on = [data.kubernetes_namespace.kubernetesnamespace]
 }
 
@@ -76,24 +76,36 @@ resource "kubernetes_namespace" "kubernetesnginxnamespace" {
 
 resource "helm_release" "nginx-ingress" {
   name       = "ingress-nginx"
-  repository = "https://helm.nginx.com/stable"
-  chart      = "nginx-ingress"
+  repository = "https://kubernetes.github.io/ingress-nginx"
+  chart      = "ingress-nginx"
   namespace  = "ingress-basic"
   timeout    = 600
-  version    = "0.16.0"
+  version    = "4.15.1"
 
-  set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-health-probe-request-path"
-    value = "/healthz"
-  }
-  set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-dns-label-name"
-    value = var.public_ip_dns
-  }
-  set {
-    name  = "controller.service.loadBalancerIP"
-    value = var.public_ip_address
-  }
+  set = [
+    {
+      name  = "controller.ingressClass"
+      value = "nginx-community"
+    },
+    {
+      name  = "controller.ingressClassResource.name"
+      value = "nginx-community"
+    },
+    {
+      name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-health-probe-request-path"
+      value = "/healthz"
+      type  = "string"
+    },
+    {
+      name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-dns-label-name"
+      value = var.public_ip_dns
+      type  = "string"
+    },
+    {
+      name  = "controller.service.loadBalancerIP"
+      value = var.public_ip_address
+    }
+  ]
   depends_on = [kubernetes_namespace.kubernetesnginxnamespace]
 }
 

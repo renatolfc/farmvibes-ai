@@ -1638,9 +1638,9 @@ def setup(
     dapr_updated = False
     dapr = DaprWrapper(kubectl.os_artifacts, kubectl)
     if terraform_is_update and migration_state is None and dapr.needs_upgrade():
-        log("Upgrading Dapr CRDs")
-        if not dapr.upgrade_crds():
-            log("Unable to upgrade Dapr CRDs", level="error")
+        log("Upgrading Dapr one supported minor at a time")
+        if not dapr.upgrade_sequentially():
+            log("Unable to upgrade Dapr", level="error")
             return False
         dapr_updated = True
 

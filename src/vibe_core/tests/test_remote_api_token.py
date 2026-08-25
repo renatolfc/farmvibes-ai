@@ -219,6 +219,31 @@ def test_remote_status_stops_when_requested_cluster_does_not_exist(
     artifacts.get_kube_context.assert_not_called()
 
 
+def test_legacy_ingress_service_is_released_before_chart_cutover() -> None:
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.return_value = {
+        "metadata": {
+            "labels": {
+                "app.kubernetes.io/instance": "ingress-nginx",
+            }
+        }
+    }
+
+    assert remote.remove_legacy_ingress_service(kubectl)
+    kubectl.delete.assert_called_once_with(
+        "service",
+        remote.LEGACY_INGRESS_SERVICE,
+        namespace=remote.LEGACY_INGRESS_NAMESPACE,
+    )
+    kubectl.wait_for_delete.assert_called_once_with(
+        "service",
+        remote.LEGACY_INGRESS_SERVICE,
+        timeout_s=600,
+        namespace=remote.LEGACY_INGRESS_NAMESPACE,
+    )
+
+
 def test_remote_status_keeps_previous_pair_when_url_discovery_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -387,6 +412,11 @@ def configured_update(
 
     monkeypatch.setattr(remote, "TerraformWrapper", Mock(return_value=terraform))
     monkeypatch.setattr(remote, "_initialize_kubectl", Mock(return_value=kubectl))
+    cert_manager = Mock()
+    cert_manager.needs_upgrade.return_value = False
+    monkeypatch.setattr(
+        remote, "CertManagerWrapper", Mock(return_value=cert_manager)
+    )
     monkeypatch.setattr(remote, "DaprWrapper", Mock(return_value=dapr))
     monkeypatch.setattr(remote, "status", Mock(return_value=True))
     monkeypatch.setattr(remote, "needs_service_migration", Mock(return_value=False))

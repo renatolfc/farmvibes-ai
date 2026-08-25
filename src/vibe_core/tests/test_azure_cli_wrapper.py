@@ -4,18 +4,25 @@
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, List
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
 
 from vibe_core.cli import remote
 from vibe_core.cli.osartifacts import (
     KubectlInstaller,
+    OpenTofuInstaller,
     OSArtifacts,
     github_api_headers,
     secure_path,
 )
-from vibe_core.cli.wrappers import AzureCliWrapper, KubectlWrapper, TerraformWrapper
+from vibe_core.cli.wrappers import (
+    AzureCliWrapper,
+    CertManagerWrapper,
+    DaprWrapper,
+    KubectlWrapper,
+    TerraformWrapper,
+)
 
 
 def test_get_storage_account_key_accepts_wrapped_azure_cli_response() -> None:
@@ -26,6 +33,154 @@ def test_get_storage_account_key_accepts_wrapped_azure_cli_response() -> None:
         return_value='{"keys": [{"value": "storage-key"}]}',
     ):
         assert az.get_storage_account_key("storage") == "storage-key"
+
+
+def test_state_storage_hardening_enables_versioning_and_soft_delete() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.az = "az"
+    az = AzureCliWrapper(artifacts, "cluster", "resource-group")
+
+    with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
+        az.harden_storage_account("storage")
+
+    command = execute.call_args.args[0]
+    assert command[:6] == [
+        "az",
+        "storage",
+        "account",
+        "blob-service-properties",
+        "update",
+        "--account-name",
+    ]
+    assert "--enable-versioning" in command
+    assert "--enable-delete-retention" in command
+    assert "--enable-container-delete-retention" in command
+    assert command[command.index("--delete-retention-days") + 1] == "14"
+    assert command[command.index("--container-delete-retention-days") + 1] == "14"
+
+
+def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    artifacts.get_terraform_file.return_value = "/tmp/services.tfstate"
+    az = Mock()
+    az.blob_exists.return_value = False
+    terraform = TerraformWrapper(artifacts, az)
+    events = []
+    legacy_state = {"lineage": "lineage", "resources": [{"type": "test"}]}
+    terraform._pull_legacy_services_state = Mock(
+        side_effect=lambda *args: events.append("pull-legacy") or legacy_state
+    )
+    terraform.init = Mock(side_effect=lambda *args, **kwargs: events.append("init-azure"))
+    terraform._push_state = Mock(
+        side_effect=lambda *args: events.append("push-azure")
+    )
+    terraform._pull_state = Mock(
+        side_effect=lambda *args: events.append("verify-azure") or legacy_state
+    )
+    terraform._delete_legacy_services_state = Mock(
+        side_effect=lambda *args: events.append("delete-legacy")
+    )
+    terraform.apply = Mock()
+    terraform.get_output = Mock(return_value={})
+
+    terraform.ensure_services(
+        cluster_name="cluster",
+        resource_group="group",
+        registry_path="registry",
+        kubernetes_config_path="/tmp/kubeconfig",
+        kubernetes_config_context="cluster-admin",
+        worker_node_pool_name="worker",
+        public_ip_fqdn="cluster.example",
+        image_prefix="farmai/",
+        image_tag="latest",
+        shared_resource_pv_claim_name="claim",
+        otel_service_name="",
+        worker_replicas=1,
+        log_level="info",
+        backend_storage_name="storage",
+        backend_container_name="terraform-state",
+        backend_storage_access_key="key",
+        migrate_state=True,
+    )
+
+    assert events == [
+        "pull-legacy",
+        "init-azure",
+        "push-azure",
+        "verify-azure",
+        "delete-legacy",
+    ]
+    backend_config = terraform.init.call_args.kwargs["backend_config"]
+    assert backend_config == {
+        "storage_account_name": "storage",
+        "resource_group_name": "group",
+        "container_name": "terraform-state",
+        "access_key": "key",
+    }
+
+
+def test_opentofu_installer_uses_official_release_assets() -> None:
+    with patch.object(
+        OpenTofuInstaller, "latest_release", new_callable=PropertyMock
+    ) as latest:
+        latest.return_value = "1.12.6"
+        installer = OpenTofuInstaller(Path("/tmp"))
+        assert installer.urls.linux.endswith(
+            "/v1.12.6/tofu_1.12.6_linux_amd64.zip"
+        )
+        assert installer.cli_name == "tofu"
+
+
+def test_opentofu_version_is_pinned_for_state_migration() -> None:
+    artifacts = OSArtifacts()
+    dependency = artifacts.REQUIRED_TOOLS["tofu"]
+    artifacts.get_version = Mock(return_value="1.13.0")
+
+    assert dependency.minimum_version == "1.12.6"
+    assert dependency.maximum_version == "1.12.6"
+    assert not artifacts.is_supported_version(dependency, Path("/tmp/tofu"))
+
+
+def test_dapr_upgrade_path_uses_latest_patch_for_each_minor() -> None:
+    dapr = DaprWrapper(Mock(), Mock())
+    dapr.version = Mock(return_value=["1.13.3"])
+    dapr._target_version = Mock(return_value="1.18.3")
+
+    assert dapr.upgrade_path() == [
+        "1.14.5",
+        "1.15.14",
+        "1.16.19",
+        "1.17.13",
+        "1.18.3",
+    ]
+
+
+def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
+    dapr = DaprWrapper(Mock(), Mock())
+    dapr.upgrade_path = Mock(return_value=["1.17.13", "1.18.3"])
+    events = []
+    dapr.upgrade_crds = Mock(
+        side_effect=lambda version: events.append(("crds", version)) or True
+    )
+    dapr.upgrade = Mock(
+        side_effect=lambda version: events.append(("runtime", version))
+    )
+
+    assert dapr.upgrade_sequentially()
+    assert events == [
+        ("crds", "1.17.13"),
+        ("runtime", "1.17.13"),
+        ("crds", "1.18.3"),
+        ("runtime", "1.18.3"),
+    ]
+
+
+def test_cert_manager_upgrade_path_uses_latest_patch_for_each_minor() -> None:
+    cert_manager = CertManagerWrapper(Mock(), Mock())
+    cert_manager.version = Mock(return_value="1.18.2")
+
+    assert cert_manager.upgrade_path() == ["1.18.6", "1.19.6", "1.20.3", "1.21.1"]
 
 
 def test_remote_cluster_name_fits_key_vault_limit() -> None:
