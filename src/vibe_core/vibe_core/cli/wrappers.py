@@ -391,49 +391,50 @@ class TerraformWrapper:
             )
             lease = json.loads(output)
             holder = lease.get("spec", {}).get("holderIdentity")
-            if holder:
+            if holder and holder != lock_id:
                 raise RuntimeError("Legacy services state is locked")
-            patch = [
-                {
-                    "op": "test",
-                    "path": "/metadata/resourceVersion",
-                    "value": lease["metadata"]["resourceVersion"],
-                },
-                {
-                    "op": "add",
-                    "path": "/spec/holderIdentity",
-                    "value": lock_id,
-                },
-                {
-                    "op": "add",
-                    "path": (
-                        "/metadata/annotations/"
-                        "app.terraform.io~1lock-info"
-                        if lease["metadata"].get("annotations")
-                        else "/metadata/annotations"
-                    ),
-                    "value": (
-                        lock_info
-                        if lease["metadata"].get("annotations")
-                        else {"app.terraform.io/lock-info": lock_info}
-                    ),
-                },
-            ]
-            execute_cmd(
-                command
-                + [
-                    "patch",
-                    "lease",
-                    self.LEGACY_SERVICES_STATE_LOCK,
-                    "--type",
-                    "json",
-                    "--patch",
-                    json.dumps(patch),
-                ],
-                error_string="Failed to lock legacy services state",
-                censor_output=True,
-                subprocess_log_level="debug",
-            )
+            if holder != lock_id:
+                patch = [
+                    {
+                        "op": "test",
+                        "path": "/metadata/resourceVersion",
+                        "value": lease["metadata"]["resourceVersion"],
+                    },
+                    {
+                        "op": "add",
+                        "path": "/spec/holderIdentity",
+                        "value": lock_id,
+                    },
+                    {
+                        "op": "add",
+                        "path": (
+                            "/metadata/annotations/"
+                            "app.terraform.io~1lock-info"
+                            if lease["metadata"].get("annotations")
+                            else "/metadata/annotations"
+                        ),
+                        "value": (
+                            lock_info
+                            if lease["metadata"].get("annotations")
+                            else {"app.terraform.io/lock-info": lock_info}
+                        ),
+                    },
+                ]
+                execute_cmd(
+                    command
+                    + [
+                        "patch",
+                        "lease",
+                        self.LEGACY_SERVICES_STATE_LOCK,
+                        "--type",
+                        "json",
+                        "--patch",
+                        json.dumps(patch),
+                    ],
+                    error_string="Failed to lock legacy services state",
+                    censor_output=True,
+                    subprocess_log_level="debug",
+                )
         finally:
             os.remove(manifest_path)
         try:

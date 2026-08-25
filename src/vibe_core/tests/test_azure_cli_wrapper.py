@@ -99,6 +99,32 @@ def test_infra_replacement_does_not_restart_workloads_mid_upgrade(
     kubectl_class.assert_not_called()
 
 
+def test_ingress_cutover_runs_before_kubernetes_apply() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    artifacts.config_file.return_value = "/tmp/kubeconfig"
+    artifacts.get_terraform_file.return_value = "/tmp/kubernetes.tfstate"
+    terraform = TerraformWrapper(artifacts)
+    events = []
+    terraform.init = Mock()
+    terraform.destroy_legacy_service_charts = Mock(
+        side_effect=lambda *args: events.append("legacy")
+    )
+    terraform.apply = Mock(
+        side_effect=lambda *args: events.append("apply")
+    )
+    terraform.get_output = Mock(return_value={})
+
+    terraform.ensure_k8s_cluster(
+        *["value"] * 21,
+        False,
+        migrate_legacy_services=True,
+        before_apply=lambda: events.append("ingress"),
+    )
+
+    assert events == ["legacy", "ingress", "apply"]
+
+
 @pytest.mark.parametrize("resources", [[], [{"type": "test"}]])
 def test_services_state_migrates_before_legacy_secret_is_deleted(
     resources: List[Dict[str, str]],
@@ -340,6 +366,35 @@ def test_legacy_services_state_lock_is_released() -> None:
         "path": "/spec/holderIdentity",
         "value": None,
     }
+
+
+def test_legacy_services_state_lock_accepts_ambiguous_create() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    terraform = TerraformWrapper(artifacts)
+    lock_id = "same-lock"
+
+    def execute(command: List[str], **kwargs: Any) -> str:
+        if "create" in command:
+            raise ValueError("response lost")
+        if "get" in command:
+            return json.dumps(
+                {
+                    "metadata": {
+                        "resourceVersion": "1",
+                        "annotations": {},
+                    },
+                    "spec": {"holderIdentity": lock_id},
+                }
+            )
+        return ""
+
+    with (
+        patch("vibe_core.cli.wrappers.uuid.uuid4", return_value=lock_id),
+        patch("vibe_core.cli.wrappers.execute_cmd", side_effect=execute),
+    ):
+        with terraform._lock_legacy_services_state("kubeconfig", "context"):
+            pass
 
 
 def test_legacy_services_state_is_deleted_from_default_namespace() -> None:
