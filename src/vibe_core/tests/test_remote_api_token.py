@@ -577,6 +577,7 @@ def test_update_provisions_before_services_and_restarts_services(
 
     assert run_update(artifacts, az) is True
     assert order == ["token", "services"]
+    remote.DaprWrapper.return_value.prepare_for_terraform_reconciliation.assert_called_once()
     assert provision.call_args.args[1] is False
     kubectl.context.assert_called_once_with("cluster")
     assert [(call.args, call.kwargs) for call in kubectl.restart.call_args_list] == [

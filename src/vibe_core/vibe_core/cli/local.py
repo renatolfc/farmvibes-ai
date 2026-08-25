@@ -1642,8 +1642,9 @@ def setup(
         if not dapr.upgrade_sequentially():
             log("Unable to upgrade Dapr", level="error")
             return False
-        dapr.prepare_for_terraform_reconciliation()
         dapr_updated = True
+    if terraform_is_update and migration_state is None:
+        dapr.prepare_for_terraform_reconciliation()
 
     terraform = TerraformWrapper(k3d.os_artifacts, az)
     with terraform.workspace(f"farmvibes-k3d-{k3d.cluster_name}"):

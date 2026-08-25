@@ -488,6 +488,7 @@ def setup_or_upgrade(
                 if not dapr.upgrade_sequentially():
                     log("Unable to upgrade Dapr", level="error")
                     return False
+            if is_update:
                 dapr.prepare_for_terraform_reconciliation()
 
             migration_backup: Optional[Path] = None
