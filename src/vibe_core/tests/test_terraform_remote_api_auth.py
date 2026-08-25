@@ -109,7 +109,9 @@ def test_maintenance_infrastructure_versions_and_platforms():
     assert 'version = "5.2.0"' in (infra / "providers.tf").read_text()
     assert 'version = "3.2.1"' in (kubernetes / "providers.tf").read_text()
     assert 'version = "3.2.0"' in (kubernetes / "providers.tf").read_text()
-    assert (infra / "kubernetes.tf").read_text().count("AzureLinux3") == 2
+    cluster = (infra / "kubernetes.tf").read_text()
+    assert cluster.count("AzureLinux3") == 2
+    assert cluster.count("temporary_name_for_rotation") == 2
     assert 'version    = "1.18.3"' in (kubernetes / "dapr.tf").read_text()
     assert 'version    = "1.18.3"' in (local / "dapr.tf").read_text()
     ingress = (kubernetes / "init.tf").read_text()

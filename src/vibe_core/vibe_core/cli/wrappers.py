@@ -315,16 +315,19 @@ class TerraformWrapper:
         working_directory: str,
         state: Dict[str, Any],
     ) -> None:
-        with tempfile.NamedTemporaryFile(
+        state_file = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
             dir=self.os_artifacts.private_config_dir,
             suffix=".tfstate",
-        ) as state_file:
+            delete=False,
+        )
+        try:
             secure_path(Path(state_file.name), 0o600)
             json.dump(state, state_file)
             state_file.flush()
             os.fsync(state_file.fileno())
+            state_file.close()
             execute_cmd(
                 [
                     self.os_artifacts.terraform,
@@ -345,6 +348,10 @@ class TerraformWrapper:
                     "TF_PLUGIN_CACHE_DIR": self.PLUGIN_CACHE_DIR,
                 },
             )
+        finally:
+            state_file.close()
+            if os.path.exists(state_file.name):
+                os.remove(state_file.name)
 
     def _delete_legacy_services_state(
         self,
@@ -650,7 +657,23 @@ class TerraformWrapper:
                 backend_container_name,
                 self.SERVICES_STATE_FILE,
             )
-            if not target_exists:
+            legacy_exists = not target_exists
+            if target_exists:
+                kubectl = KubectlWrapper(
+                    self.os_artifacts,
+                    cluster_name,
+                    config_context=kubernetes_config_context,
+                )
+                with kubectl.context():
+                    legacy_exists = (
+                        kubectl.get_or_none(
+                            "secret",
+                            self.LEGACY_SERVICES_STATE_SECRET,
+                            namespace="default",
+                        )
+                        is not None
+                    )
+            if legacy_exists:
                 legacy_state = self._pull_legacy_services_state(
                     kubernetes_config_path,
                     kubernetes_config_context,
@@ -662,21 +685,18 @@ class TerraformWrapper:
             refresh_creds=True,
         )
         if legacy_state.get("resources"):
-            self._push_state(services_directory, legacy_state)
+            if not target_exists:
+                self._push_state(services_directory, legacy_state)
             migrated_state = self._pull_state(services_directory)
-            if migrated_state.get("lineage") != legacy_state.get("lineage"):
+            if (
+                not migrated_state.get("resources")
+                or migrated_state.get("lineage") != legacy_state.get("lineage")
+            ):
                 raise RuntimeError("Services state migration verification failed")
             self._delete_legacy_services_state(
                 cluster_name,
                 kubernetes_config_context,
             )
-        elif target_exists:
-            target_state = self._pull_state(services_directory)
-            if target_state.get("resources"):
-                self._delete_legacy_services_state(
-                    cluster_name,
-                    kubernetes_config_context,
-                )
         variables = {
             "namespace": "default",
             "prefix": cluster_name,

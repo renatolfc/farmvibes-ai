@@ -120,6 +120,73 @@ def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
     }
 
 
+def test_services_state_retry_requires_matching_lineage() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    az = Mock()
+    az.blob_exists.return_value = True
+    terraform = TerraformWrapper(artifacts, az)
+    terraform._pull_legacy_services_state = Mock(
+        return_value={"lineage": "legacy", "resources": [{"type": "test"}]}
+    )
+    terraform._pull_state = Mock(
+        return_value={"lineage": "other", "resources": [{"type": "test"}]}
+    )
+    terraform.init = Mock()
+    terraform._push_state = Mock()
+    terraform._delete_legacy_services_state = Mock()
+
+    with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:
+        kubectl_class.return_value.get_or_none.return_value = {"metadata": {}}
+        with pytest.raises(
+            RuntimeError, match="Services state migration verification failed"
+        ):
+            terraform.ensure_services(
+                cluster_name="cluster",
+                resource_group="group",
+                registry_path="registry",
+                kubernetes_config_path="/tmp/kubeconfig",
+                kubernetes_config_context="cluster-admin",
+                worker_node_pool_name="worker",
+                public_ip_fqdn="cluster.example",
+                image_prefix="farmai/",
+                image_tag="latest",
+                shared_resource_pv_claim_name="claim",
+                otel_service_name="",
+                worker_replicas=1,
+                log_level="info",
+                backend_storage_name="storage",
+                backend_container_name="terraform-state",
+                backend_storage_access_key="key",
+                migrate_state=True,
+            )
+
+    terraform._push_state.assert_not_called()
+    terraform._delete_legacy_services_state.assert_not_called()
+
+
+def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.private_config_dir = tmp_path
+    artifacts.terraform = "tofu"
+    terraform = TerraformWrapper(artifacts)
+    state_path = None
+
+    def inspect_state(command: List[str], **kwargs: Any) -> str:
+        nonlocal state_path
+        state_path = Path(command[-1])
+        assert state_path.read_text() == '{"lineage": "test"}'
+        return ""
+
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd", side_effect=inspect_state
+    ):
+        terraform._push_state("/terraform/services", {"lineage": "test"})
+
+    assert state_path is not None
+    assert not state_path.exists()
+
+
 def test_legacy_services_state_is_deleted_from_default_namespace() -> None:
     artifacts = Mock(spec=OSArtifacts)
     with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:

@@ -29,13 +29,14 @@ resource "azurerm_kubernetes_cluster" "kubernetes" {
   }
 
   default_node_pool {
-    name                 = "default"
-    auto_scaling_enabled = true
-    min_count            = 2
-    max_count            = local.default_node_pool_max_count
-    vm_size              = "Standard_B4ms"
-    os_sku               = "AzureLinux3"
-    vnet_subnet_id       = azurerm_subnet.aks-subnet.id
+    name                        = "default"
+    auto_scaling_enabled        = true
+    min_count                   = 2
+    max_count                   = local.default_node_pool_max_count
+    vm_size                     = "Standard_B4ms"
+    os_sku                      = "AzureLinux3"
+    vnet_subnet_id              = azurerm_subnet.aks-subnet.id
+    temporary_name_for_rotation = "defaulttmp"
   }
 
   storage_profile {
@@ -58,14 +59,15 @@ data "azurerm_user_assigned_identity" "kubernetesidentity" {
 
 
 resource "azurerm_kubernetes_cluster_node_pool" "kubernetes-worker" {
-  name                  = "worker"
-  kubernetes_cluster_id = azurerm_kubernetes_cluster.kubernetes.id
-  vm_size               = "Standard_D8s_v3"
-  auto_scaling_enabled  = true
-  min_count             = 1
-  max_count             = var.max_worker_nodes
-  os_sku                = "AzureLinux3"
-  depends_on            = [azurerm_kubernetes_cluster.kubernetes]
+  name                        = "worker"
+  kubernetes_cluster_id       = azurerm_kubernetes_cluster.kubernetes.id
+  vm_size                     = "Standard_D8s_v3"
+  auto_scaling_enabled        = true
+  min_count                   = 1
+  max_count                   = var.max_worker_nodes
+  os_sku                      = "AzureLinux3"
+  temporary_name_for_rotation = "workertmp"
+  depends_on                  = [azurerm_kubernetes_cluster.kubernetes]
 
   lifecycle {
     ignore_changes = [
