@@ -951,8 +951,11 @@ class TerraformWrapper:
         max_full_history_runs: int = 100,
         max_compact_history_runs: int = 900,
     ):
-        if not is_update:
-            self.init(self.os_artifacts.local_directory, False, cleanup_state=True)
+        self.init(
+            self.os_artifacts.local_directory,
+            False,
+            cleanup_state=not is_update,
+        )
         variables: Dict[str, str] = {
             "acr_registry": registry,
             "run_as_user_id": f"{self.getuid()}",

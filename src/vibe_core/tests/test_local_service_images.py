@@ -253,6 +253,8 @@ def test_local_dispatch_forwards_service_images(
     assert local.dispatch(args) is True
     assert captured["redis_image"] == CUSTOM_REDIS_IMAGE
     assert captured["rabbitmq_image"] == CUSTOM_RABBITMQ_IMAGE
+    assert "redis_image_tag" not in captured
+    assert "rabbitmq_image_tag" not in captured
     assert captured["is_update"] is is_update
 
 
@@ -465,8 +467,37 @@ def test_terraform_wrapper_propagates_service_images(
 
     assert captured["redis_image"] == CUSTOM_REDIS_IMAGE
     assert captured["rabbitmq_image"] == CUSTOM_RABBITMQ_IMAGE
-    assert "redis_image_tag" not in captured
-    assert "rabbitmq_image_tag" not in captured
+
+
+def test_local_update_initializes_upgraded_providers(tmp_path: Path):
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.local_directory = str(tmp_path)
+    artifacts.get_terraform_file.return_value = str(tmp_path / "state")
+    terraform = TerraformWrapper(artifacts)
+    terraform.init = Mock()
+    terraform.getuid = Mock(return_value=1000)
+    terraform.getgid = Mock(return_value=1000)
+    terraform.apply = Mock()
+    terraform.get_output = Mock(return_value={})
+
+    terraform.ensure_local_cluster(
+        "cluster",
+        "registry",
+        "INFO",
+        None,
+        None,
+        "tag",
+        "",
+        str(tmp_path),
+        1,
+        "context",
+        False,
+        is_update=True,
+    )
+
+    terraform.init.assert_called_once_with(
+        str(tmp_path), False, cleanup_state=False
+    )
 
 
 def test_legacy_chart_services_require_migration():
