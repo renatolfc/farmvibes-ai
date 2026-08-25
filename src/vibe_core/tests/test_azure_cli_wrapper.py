@@ -499,9 +499,20 @@ def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
 
 def test_cert_manager_upgrade_path_uses_latest_patch_for_each_minor() -> None:
     cert_manager = CertManagerWrapper(Mock(), Mock())
-    cert_manager.version = Mock(return_value="1.18.2")
+    cert_manager.version = Mock(return_value="1.12.2")
 
-    assert cert_manager.upgrade_path() == ["1.18.6", "1.19.6", "1.20.3", "1.21.1"]
+    assert cert_manager.upgrade_path() == [
+        "1.12.17",
+        "1.13.6",
+        "1.14.7",
+        "1.15.5",
+        "1.16.5",
+        "1.17.4",
+        "1.18.6",
+        "1.19.6",
+        "1.20.3",
+        "1.21.1",
+    ]
 
 
 def test_remote_cluster_name_fits_key_vault_limit() -> None:

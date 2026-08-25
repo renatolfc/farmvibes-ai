@@ -2725,6 +2725,7 @@ class DockerWrapper:
 class CertManagerWrapper:
     TARGET_VERSION = "1.21.1"
     STABLE_MINOR_VERSIONS = (
+        "1.12.17",
         "1.13.6",
         "1.14.7",
         "1.15.5",
