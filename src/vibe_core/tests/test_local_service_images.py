@@ -2898,6 +2898,58 @@ def test_image_preflight_manifest_uses_selected_pull_secret(
     assert manifests[0]["spec"]["automountServiceAccountToken"] is False
 
 
+def test_image_preflight_retries_transient_pull_secret_cache_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    attempts = 0
+
+    def execute(command: Any, **kwargs: Any) -> str:
+        nonlocal attempts
+        if "get" not in command:
+            return ""
+        attempts += 1
+        if attempts == 1:
+            return json.dumps(
+                {
+                    "status": {
+                        "containerStatuses": [
+                            {
+                                "state": {
+                                    "waiting": {
+                                        "reason": "ErrImagePull",
+                                        "message": (
+                                            "authorization failed: "
+                                            "no basic auth credentials"
+                                        ),
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            )
+        return json.dumps(
+            {
+                "status": {
+                    "containerStatuses": [
+                        {"imageID": "sha256:image"}
+                    ]
+                }
+            }
+        )
+
+    monkeypatch.setattr(wrappers, "execute_cmd", execute)
+    monkeypatch.setattr(wrappers.time, "sleep", lambda _: None)
+
+    KubectlWrapper(artifacts, "test").preflight_image_pull(
+        CUSTOM_REDIS_IMAGE, True
+    )
+
+    assert attempts == 2
+
+
 def test_redis_volume_pod_renders_default_and_selected_images(
     monkeypatch: pytest.MonkeyPatch,
 ):

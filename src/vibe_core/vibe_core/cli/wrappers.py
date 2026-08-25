@@ -1973,6 +1973,9 @@ class KubectlWrapper:
             )
 
         deadline = time.monotonic() + timeout_s
+        # Kubelet can report auth failure while its node-authorizer cache learns
+        # that the new pod may read the new pull Secret.
+        auth_failure_at: Optional[float] = None
         last_status = ""
         try:
             while time.monotonic() < deadline:
@@ -2001,7 +2004,7 @@ class KubectlWrapper:
                         for value in (waiting.get("reason"), waiting.get("message"))
                         if value
                     )
-                    if any(
+                    authentication_failed = any(
                         marker in last_status.lower()
                         for marker in (
                             "401 unauthorized",
@@ -2013,10 +2016,16 @@ class KubectlWrapper:
                             "no basic auth credentials",
                             "pull access denied",
                         )
-                    ):
-                        raise ImagePullAuthenticationError(
-                            image, last_status
-                        )
+                    )
+                    if authentication_failed:
+                        if auth_failure_at is None:
+                            auth_failure_at = time.monotonic()
+                        elif time.monotonic() - auth_failure_at >= 10:
+                            raise ImagePullAuthenticationError(
+                                image, last_status
+                            )
+                    else:
+                        auth_failure_at = None
                 time.sleep(1)
             raise RuntimeError(
                 f"Timed out pulling {image}"
