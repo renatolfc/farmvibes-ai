@@ -520,7 +520,10 @@ def test_legacy_services_state_lock_is_released() -> None:
     assert "create" in commands[0]
     assert "get" in commands[1]
     acquire = json.loads(commands[2][commands[2].index("--patch") + 1])
-    assert acquire[2]["path"] == "/metadata/annotations"
+    assert any(
+        operation["path"] == "/metadata/annotations"
+        for operation in acquire
+    )
     assert commands[3] == ["migration"]
     assert "patch" in commands[4]
     release = json.loads(commands[4][commands[4].index("--patch") + 1])
@@ -558,6 +561,45 @@ def test_legacy_services_state_lock_accepts_ambiguous_create() -> None:
     ):
         with terraform._lock_legacy_services_state("kubeconfig", "context"):
             pass
+
+
+def test_legacy_services_state_lock_recovers_when_stale() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    terraform = TerraformWrapper(artifacts)
+    commands = []
+
+    def execute(command: List[str], **kwargs: Any) -> str:
+        commands.append(command)
+        if "create" in command:
+            raise ValueError("lease exists")
+        if "get" in command:
+            return json.dumps(
+                {
+                    "metadata": {
+                        "resourceVersion": "1",
+                        "annotations": {},
+                    },
+                    "spec": {
+                        "holderIdentity": "abandoned",
+                        "acquireTime": "2020-01-01T00:00:00Z",
+                        "leaseDurationSeconds": 900,
+                    },
+                }
+            )
+        return ""
+
+    with patch("vibe_core.cli.wrappers.execute_cmd", side_effect=execute):
+        with terraform._lock_legacy_services_state(
+            "kubeconfig", "context"
+        ):
+            pass
+
+    acquire = json.loads(commands[2][commands[2].index("--patch") + 1])
+    assert any(
+        operation["path"] == "/spec/holderIdentity"
+        for operation in acquire
+    )
 
 
 def test_legacy_services_state_is_deleted_from_default_namespace() -> None:

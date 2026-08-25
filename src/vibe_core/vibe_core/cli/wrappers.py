@@ -99,6 +99,7 @@ class TerraformWrapper:
     LEGACY_SERVICES_STATE_LOCK = "lock-tfstate-default-terraform-state"
     LEGACY_MIGRATION_LINEAGE = "farmvibes.ai/migrated-lineage"
     LEGACY_MIGRATION_SERIAL = "farmvibes.ai/migrated-serial"
+    LEGACY_LOCK_DURATION_SECONDS = 900
     ANSI_ESCAPE_PAT = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
     REPLACEMENT_PAT = re.compile(r"#\s+(.*)\s+must\s+be\s+replaced")
     REPLACEMENT_SUBSTRINGS = [
@@ -340,6 +341,8 @@ class TerraformWrapper:
                 "Path": "default",
             }
         )
+        acquired_at = datetime.now(timezone.utc)
+        acquired_at_string = acquired_at.isoformat().replace("+00:00", "Z")
         command = [
             self.os_artifacts.kubectl,
             "--kubeconfig",
@@ -362,7 +365,11 @@ class TerraformWrapper:
                     "app.kubernetes.io/managed-by": "terraform",
                 },
             },
-            "spec": {"holderIdentity": lock_id},
+            "spec": {
+                "holderIdentity": lock_id,
+                "acquireTime": acquired_at_string,
+                "leaseDurationSeconds": self.LEGACY_LOCK_DURATION_SECONDS,
+            },
         }
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
@@ -392,9 +399,21 @@ class TerraformWrapper:
                 subprocess_log_level="debug",
             )
             lease = json.loads(output)
-            holder = lease.get("spec", {}).get("holderIdentity")
+            spec = lease.get("spec", {})
+            holder = spec.get("holderIdentity")
             if holder and holder != lock_id:
-                raise RuntimeError("Legacy services state is locked")
+                acquire_time = spec.get("acquireTime")
+                duration = spec.get("leaseDurationSeconds")
+                stale = False
+                if acquire_time and duration:
+                    acquired = datetime.fromisoformat(
+                        acquire_time.replace("Z", "+00:00")
+                    )
+                    stale = (
+                        datetime.now(timezone.utc) - acquired
+                    ).total_seconds() > duration
+                if not stale:
+                    raise RuntimeError("Legacy services state is locked")
             if holder != lock_id:
                 patch = [
                     {
@@ -406,6 +425,16 @@ class TerraformWrapper:
                         "op": "add",
                         "path": "/spec/holderIdentity",
                         "value": lock_id,
+                    },
+                    {
+                        "op": "add",
+                        "path": "/spec/acquireTime",
+                        "value": acquired_at_string,
+                    },
+                    {
+                        "op": "add",
+                        "path": "/spec/leaseDurationSeconds",
+                        "value": self.LEGACY_LOCK_DURATION_SECONDS,
                     },
                     {
                         "op": "add",
