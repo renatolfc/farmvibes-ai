@@ -887,12 +887,12 @@ class TerraformWrapper:
                 cleanup_state=cleanup_state,
                 refresh_creds=True,
             )
-            if legacy_state.get("resources"):
+            if legacy_state:
                 if not target_exists:
                     self._push_state(services_directory, legacy_state)
                 migrated_state = self._pull_state(services_directory)
                 if (
-                    not migrated_state.get("resources")
+                    not migrated_state
                     or migrated_state.get("lineage")
                     != legacy_state.get("lineage")
                     or migrated_state.get("serial", 0)

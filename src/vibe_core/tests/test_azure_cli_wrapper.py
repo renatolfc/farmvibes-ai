@@ -99,7 +99,10 @@ def test_infra_replacement_does_not_restart_workloads_mid_upgrade(
     kubectl_class.assert_not_called()
 
 
-def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
+@pytest.mark.parametrize("resources", [[], [{"type": "test"}]])
+def test_services_state_migrates_before_legacy_secret_is_deleted(
+    resources: List[Dict[str, str]],
+) -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.aks_directory = "/terraform/aks"
     artifacts.get_terraform_file.return_value = "/tmp/services.tfstate"
@@ -110,7 +113,7 @@ def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
     legacy_state = {
         "lineage": "lineage",
         "serial": 2,
-        "resources": [{"type": "test"}],
+        "resources": resources,
     }
 
     @contextmanager
