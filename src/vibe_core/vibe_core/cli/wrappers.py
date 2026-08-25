@@ -97,6 +97,8 @@ class TerraformWrapper:
         "tfstateWorkspace=default"
     )
     LEGACY_SERVICES_STATE_LOCK = "lock-tfstate-default-terraform-state"
+    LEGACY_MIGRATION_LINEAGE = "farmvibes.ai/migrated-lineage"
+    LEGACY_MIGRATION_SERIAL = "farmvibes.ai/migrated-serial"
     ANSI_ESCAPE_PAT = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
     REPLACEMENT_PAT = re.compile(r"#\s+(.*)\s+must\s+be\s+replaced")
     REPLACEMENT_SUBSTRINGS = [
@@ -506,6 +508,64 @@ class TerraformWrapper:
             raise RuntimeError("Services state Secret chunks are incomplete")
         return json.loads(gzip.decompress(b"".join(data for _, data in chunks)))
 
+    def _legacy_migration_marker(
+        self,
+        kubernetes_config_path: str,
+        kubernetes_config_context: str,
+    ) -> Tuple[Optional[str], Optional[int]]:
+        output = execute_cmd(
+            [
+                self.os_artifacts.kubectl,
+                "--kubeconfig",
+                kubernetes_config_path,
+                "--context",
+                kubernetes_config_context,
+                "--namespace",
+                "default",
+                "get",
+                "lease",
+                self.LEGACY_SERVICES_STATE_LOCK,
+                "--output",
+                "json",
+            ],
+            error_string="Failed to inspect services state migration",
+            censor_output=True,
+            subprocess_log_level="debug",
+        )
+        annotations = json.loads(output).get("metadata", {}).get(
+            "annotations", {}
+        )
+        lineage = annotations.get(self.LEGACY_MIGRATION_LINEAGE)
+        serial = annotations.get(self.LEGACY_MIGRATION_SERIAL)
+        return lineage, int(serial) if serial is not None else None
+
+    def _mark_legacy_services_state_migrated(
+        self,
+        kubernetes_config_path: str,
+        kubernetes_config_context: str,
+        state: Dict[str, Any],
+    ) -> None:
+        execute_cmd(
+            [
+                self.os_artifacts.kubectl,
+                "--kubeconfig",
+                kubernetes_config_path,
+                "--context",
+                kubernetes_config_context,
+                "--namespace",
+                "default",
+                "annotate",
+                "lease",
+                self.LEGACY_SERVICES_STATE_LOCK,
+                f"{self.LEGACY_MIGRATION_LINEAGE}={state['lineage']}",
+                f"{self.LEGACY_MIGRATION_SERIAL}={state.get('serial', 0)}",
+                "--overwrite",
+            ],
+            error_string="Failed to record services state migration",
+            censor_output=True,
+            subprocess_log_level="debug",
+        )
+
     def _push_state(
         self,
         working_directory: str,
@@ -852,6 +912,7 @@ class TerraformWrapper:
         )
         with migration_lock:
             legacy_state: Dict[str, Any] = {}
+            orphaned_legacy_chunks = False
             target_exists = False
             if migrate_state:
                 assert self.az is not None
@@ -861,27 +922,21 @@ class TerraformWrapper:
                     backend_container_name,
                     self.SERVICES_STATE_FILE,
                 )
-                legacy_exists = not target_exists
-                if target_exists:
-                    kubectl = KubectlWrapper(
-                        self.os_artifacts,
-                        cluster_name,
-                        config_context=kubernetes_config_context,
-                    )
-                    with kubectl.context():
-                        legacy_exists = (
-                            kubectl.get_or_none(
-                                "secret",
-                                self.LEGACY_SERVICES_STATE_SECRET,
-                                namespace="default",
-                            )
-                            is not None
-                        )
-                if legacy_exists:
+                legacy_secrets = self._legacy_services_state_secrets(
+                    kubernetes_config_path,
+                    kubernetes_config_context,
+                )
+                legacy_names = {
+                    secret.get("metadata", {}).get("name")
+                    for secret in legacy_secrets
+                }
+                if self.LEGACY_SERVICES_STATE_SECRET in legacy_names:
                     legacy_state = self._pull_legacy_services_state(
                         kubernetes_config_path,
                         kubernetes_config_context,
                     )
+                elif legacy_secrets:
+                    orphaned_legacy_chunks = True
                 if not target_exists and not legacy_state:
                     kubectl = KubectlWrapper(
                         self.os_artifacts,
@@ -922,6 +977,29 @@ class TerraformWrapper:
                 ):
                     raise RuntimeError(
                         "Services state migration verification failed"
+                    )
+                self._mark_legacy_services_state_migrated(
+                    kubernetes_config_path,
+                    kubernetes_config_context,
+                    migrated_state,
+                )
+                self._delete_legacy_services_state(
+                    cluster_name,
+                    kubernetes_config_path,
+                    kubernetes_config_context,
+                )
+            elif orphaned_legacy_chunks:
+                migrated_state = self._pull_state(services_directory)
+                marker = self._legacy_migration_marker(
+                    kubernetes_config_path,
+                    kubernetes_config_context,
+                )
+                if marker != (
+                    migrated_state.get("lineage"),
+                    migrated_state.get("serial"),
+                ):
+                    raise RuntimeError(
+                        "Orphaned services state chunks cannot be verified"
                     )
                 self._delete_legacy_services_state(
                     cluster_name,

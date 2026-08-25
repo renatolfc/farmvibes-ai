@@ -135,6 +135,11 @@ def test_services_state_migrates_before_legacy_secret_is_deleted(
     az = Mock()
     az.blob_exists.return_value = False
     terraform = TerraformWrapper(artifacts, az)
+    terraform._legacy_services_state_secrets = Mock(
+        return_value=[
+            {"metadata": {"name": terraform.LEGACY_SERVICES_STATE_SECRET}}
+        ]
+    )
     events = []
     legacy_state = {
         "lineage": "lineage",
@@ -161,6 +166,9 @@ def test_services_state_migrates_before_legacy_secret_is_deleted(
     )
     terraform._delete_legacy_services_state = Mock(
         side_effect=lambda *args: events.append("delete-legacy")
+    )
+    terraform._mark_legacy_services_state_migrated = Mock(
+        side_effect=lambda *args: events.append("mark-migrated")
     )
     terraform.apply = Mock()
     terraform.get_output = Mock(return_value={})
@@ -191,6 +199,7 @@ def test_services_state_migrates_before_legacy_secret_is_deleted(
         "init-azure",
         "push-azure",
         "verify-azure",
+        "mark-migrated",
         "delete-legacy",
         "unlock",
     ]
@@ -261,6 +270,11 @@ def test_services_state_retry_requires_current_snapshot(
     az = Mock()
     az.blob_exists.return_value = True
     terraform = TerraformWrapper(artifacts, az)
+    terraform._legacy_services_state_secrets = Mock(
+        return_value=[
+            {"metadata": {"name": terraform.LEGACY_SERVICES_STATE_SECRET}}
+        ]
+    )
     terraform._pull_legacy_services_state = Mock(
         return_value={
             "lineage": "legacy",
@@ -275,6 +289,7 @@ def test_services_state_retry_requires_current_snapshot(
     terraform.init = Mock()
     terraform._push_state = Mock()
     terraform._delete_legacy_services_state = Mock()
+    terraform._mark_legacy_services_state_migrated = Mock()
 
     with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:
         kubectl_class.return_value.get_or_none.return_value = {"metadata": {}}
@@ -311,6 +326,11 @@ def test_services_state_retry_populates_empty_target() -> None:
     az = Mock()
     az.blob_exists.return_value = True
     terraform = TerraformWrapper(artifacts, az)
+    terraform._legacy_services_state_secrets = Mock(
+        return_value=[
+            {"metadata": {"name": terraform.LEGACY_SERVICES_STATE_SECRET}}
+        ]
+    )
     legacy_state = {"lineage": "legacy", "serial": 1, "resources": []}
     terraform._pull_legacy_services_state = Mock(
         return_value=legacy_state
@@ -322,6 +342,7 @@ def test_services_state_retry_populates_empty_target() -> None:
     terraform.init = Mock()
     terraform._push_state = Mock()
     terraform._delete_legacy_services_state = Mock()
+    terraform._mark_legacy_services_state_migrated = Mock()
     terraform.apply = Mock()
     terraform.get_output = Mock(return_value={})
 
@@ -359,6 +380,7 @@ def test_services_state_migration_rejects_unmanaged_services() -> None:
     az = Mock()
     az.blob_exists.return_value = False
     terraform = TerraformWrapper(artifacts, az)
+    terraform._legacy_services_state_secrets = Mock(return_value=[])
     terraform._pull_legacy_services_state = Mock(return_value={})
     terraform._lock_legacy_services_state = Mock(
         return_value=nullcontext()
@@ -391,6 +413,59 @@ def test_services_state_migration_rejects_unmanaged_services() -> None:
                 "key",
                 migrate_state=True,
             )
+
+
+def test_services_state_retry_cleans_verified_orphaned_chunks() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    az = Mock()
+    az.blob_exists.return_value = True
+    terraform = TerraformWrapper(artifacts, az)
+    terraform._legacy_services_state_secrets = Mock(
+        return_value=[
+            {
+                "metadata": {
+                    "name": (
+                        f"{terraform.LEGACY_SERVICES_STATE_SECRET}-part-1"
+                    )
+                }
+            }
+        ]
+    )
+    target_state = {"lineage": "lineage", "serial": 3, "resources": []}
+    terraform._pull_state = Mock(return_value=target_state)
+    terraform._legacy_migration_marker = Mock(
+        return_value=("lineage", 3)
+    )
+    terraform._lock_legacy_services_state = Mock(
+        return_value=nullcontext()
+    )
+    terraform.init = Mock()
+    terraform._delete_legacy_services_state = Mock()
+    terraform.apply = Mock()
+    terraform.get_output = Mock(return_value={})
+
+    terraform.ensure_services(
+        "cluster",
+        "group",
+        "registry",
+        "kubeconfig",
+        "context",
+        "worker",
+        "cluster.example",
+        "farmai/",
+        "latest",
+        "claim",
+        "",
+        1,
+        "info",
+        "storage",
+        "terraform-state",
+        "key",
+        migrate_state=True,
+    )
+
+    terraform._delete_legacy_services_state.assert_called_once()
 
 
 def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
