@@ -433,6 +433,20 @@ def test_dapr_version_reads_version_column_from_status() -> None:
         assert dapr.version() == ["1.13.3"]
 
 
+def test_dapr_version_is_empty_before_install() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.dapr = "dapr"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.return_value = None
+    dapr = DaprWrapper(artifacts, kubectl)
+
+    with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
+        assert dapr.version() == []
+
+    execute.assert_not_called()
+
+
 def test_dapr_crd_upgrade_fails_closed() -> None:
     dapr = DaprWrapper(Mock(), Mock())
 

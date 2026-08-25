@@ -2877,6 +2877,15 @@ class DaprWrapper:  # DaprWrapr 🫠
     def version(self):
         cmd = [self.os_artifacts.dapr, "status", "-k"]
         with self.kubectl.context(self.kubectl.cluster_name):
+            if (
+                self.kubectl.get_or_none(
+                    "deployment",
+                    "dapr-operator",
+                    namespace=self.namespace,
+                )
+                is None
+            ):
+                return []
             result = execute_cmd(
                 cmd, error_string="Unable to get Dapr version", subprocess_log_level="debug"
             )
