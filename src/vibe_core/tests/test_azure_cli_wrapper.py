@@ -305,6 +305,54 @@ def test_services_state_retry_requires_current_snapshot(
     terraform._delete_legacy_services_state.assert_not_called()
 
 
+def test_services_state_retry_populates_empty_target() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    az = Mock()
+    az.blob_exists.return_value = True
+    terraform = TerraformWrapper(artifacts, az)
+    legacy_state = {"lineage": "legacy", "serial": 1, "resources": []}
+    terraform._pull_legacy_services_state = Mock(
+        return_value=legacy_state
+    )
+    terraform._pull_state = Mock(side_effect=[{}, legacy_state])
+    terraform._lock_legacy_services_state = Mock(
+        return_value=nullcontext()
+    )
+    terraform.init = Mock()
+    terraform._push_state = Mock()
+    terraform._delete_legacy_services_state = Mock()
+    terraform.apply = Mock()
+    terraform.get_output = Mock(return_value={})
+
+    with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:
+        kubectl_class.return_value.get_or_none.return_value = {"metadata": {}}
+        terraform.ensure_services(
+            "cluster",
+            "group",
+            "registry",
+            "kubeconfig",
+            "context",
+            "worker",
+            "cluster.example",
+            "farmai/",
+            "latest",
+            "claim",
+            "",
+            1,
+            "info",
+            "storage",
+            "terraform-state",
+            "key",
+            migrate_state=True,
+        )
+
+    terraform._push_state.assert_called_once_with(
+        "/terraform/aks/../services", legacy_state
+    )
+    terraform._delete_legacy_services_state.assert_called_once()
+
+
 def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.private_config_dir = tmp_path
