@@ -4,9 +4,9 @@
 import base64
 import gzip
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List
 from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
@@ -106,7 +106,19 @@ def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
     az.blob_exists.return_value = False
     terraform = TerraformWrapper(artifacts, az)
     events = []
-    legacy_state = {"lineage": "lineage", "resources": [{"type": "test"}]}
+    legacy_state = {
+        "lineage": "lineage",
+        "serial": 2,
+        "resources": [{"type": "test"}],
+    }
+
+    @contextmanager
+    def lock(*args: Any):
+        events.append("lock")
+        yield
+        events.append("unlock")
+
+    terraform._lock_legacy_services_state = Mock(side_effect=lock)
     terraform._pull_legacy_services_state = Mock(
         side_effect=lambda *args: events.append("pull-legacy") or legacy_state
     )
@@ -144,11 +156,13 @@ def test_services_state_migrates_before_legacy_secret_is_deleted() -> None:
     )
 
     assert events == [
+        "lock",
         "pull-legacy",
         "init-azure",
         "push-azure",
         "verify-azure",
         "delete-legacy",
+        "unlock",
     ]
     backend_config = terraform.init.call_args.kwargs["backend_config"]
     assert backend_config == {
@@ -194,17 +208,39 @@ def test_legacy_services_state_reader_reassembles_chunks() -> None:
     assert terraform._pull_legacy_services_state("kubeconfig", "context") == state
 
 
-def test_services_state_retry_requires_matching_lineage() -> None:
+@pytest.mark.parametrize(
+    "target_state",
+    [
+        {
+            "lineage": "other",
+            "serial": 2,
+            "resources": [{"type": "test"}],
+        },
+        {
+            "lineage": "legacy",
+            "serial": 1,
+            "resources": [{"type": "test"}],
+        },
+    ],
+)
+def test_services_state_retry_requires_current_snapshot(
+    target_state: Dict[str, Any],
+) -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.aks_directory = "/terraform/aks"
     az = Mock()
     az.blob_exists.return_value = True
     terraform = TerraformWrapper(artifacts, az)
     terraform._pull_legacy_services_state = Mock(
-        return_value={"lineage": "legacy", "resources": [{"type": "test"}]}
+        return_value={
+            "lineage": "legacy",
+            "serial": 2,
+            "resources": [{"type": "test"}],
+        }
     )
-    terraform._pull_state = Mock(
-        return_value={"lineage": "other", "resources": [{"type": "test"}]}
+    terraform._pull_state = Mock(return_value=target_state)
+    terraform._lock_legacy_services_state = Mock(
+        return_value=nullcontext()
     )
     terraform.init = Mock()
     terraform._push_state = Mock()
@@ -248,6 +284,7 @@ def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
 
     def inspect_state(command: List[str], **kwargs: Any) -> str:
         nonlocal state_path
+        assert "-force" not in command
         state_path = Path(command[-1])
         assert state_path.read_text() == '{"lineage": "test"}'
         return ""
@@ -259,6 +296,45 @@ def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
 
     assert state_path is not None
     assert not state_path.exists()
+
+
+def test_legacy_services_state_lock_is_released() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    terraform = TerraformWrapper(artifacts)
+    commands = []
+
+    def execute(command: List[str], **kwargs: Any) -> str:
+        commands.append(command)
+        if "create" in command:
+            raise ValueError("lease exists")
+        if "get" in command:
+            return json.dumps(
+                {
+                    "metadata": {"resourceVersion": "1"},
+                    "spec": {"holderIdentity": None},
+                }
+            )
+        return ""
+
+    with patch("vibe_core.cli.wrappers.execute_cmd", side_effect=execute):
+        with terraform._lock_legacy_services_state(
+            "kubeconfig", "context"
+        ):
+            commands.append(["migration"])
+
+    assert "create" in commands[0]
+    assert "get" in commands[1]
+    acquire = json.loads(commands[2][commands[2].index("--patch") + 1])
+    assert acquire[2]["path"] == "/metadata/annotations"
+    assert commands[3] == ["migration"]
+    assert "patch" in commands[4]
+    release = json.loads(commands[4][commands[4].index("--patch") + 1])
+    assert release[1] == {
+        "op": "replace",
+        "path": "/spec/holderIdentity",
+        "value": None,
+    }
 
 
 def test_legacy_services_state_is_deleted_from_default_namespace() -> None:

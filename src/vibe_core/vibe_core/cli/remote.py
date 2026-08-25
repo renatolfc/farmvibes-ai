@@ -266,6 +266,7 @@ def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
             "service",
             LEGACY_INGRESS_SERVICE,
             namespace=LEGACY_INGRESS_NAMESPACE,
+            wait=False,
         )
         kubectl.wait_for_delete(
             "service",

@@ -250,6 +250,7 @@ def test_legacy_ingress_service_is_released_before_chart_cutover() -> None:
         "service",
         remote.LEGACY_INGRESS_SERVICE,
         namespace=remote.LEGACY_INGRESS_NAMESPACE,
+        wait=False,
     )
     kubectl.wait_for_delete.assert_called_once_with(
         "service",

@@ -12,8 +12,10 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from functools import partialmethod
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -94,6 +96,7 @@ class TerraformWrapper:
         "tfstate=true,tfstateSecretSuffix=terraform-state,"
         "tfstateWorkspace=default"
     )
+    LEGACY_SERVICES_STATE_LOCK = "lock-tfstate-default-terraform-state"
     ANSI_ESCAPE_PAT = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
     REPLACEMENT_PAT = re.compile(r"#\s+(.*)\s+must\s+be\s+replaced")
     REPLACEMENT_SUBSTRINGS = [
@@ -317,6 +320,156 @@ class TerraformWrapper:
         )
         return json.loads(output or "{}").get("items", [])
 
+    @contextmanager
+    def _lock_legacy_services_state(
+        self,
+        kubernetes_config_path: str,
+        kubernetes_config_context: str,
+    ):
+        lock_id = str(uuid.uuid4())
+        lock_info = json.dumps(
+            {
+                "ID": lock_id,
+                "Operation": "migration",
+                "Info": "FarmVibes services state migration",
+                "Who": "farmvibes-ai",
+                "Version": "OpenTofu",
+                "Created": datetime.now(timezone.utc).isoformat(),
+                "Path": "default",
+            }
+        )
+        command = [
+            self.os_artifacts.kubectl,
+            "--kubeconfig",
+            kubernetes_config_path,
+            "--context",
+            kubernetes_config_context,
+            "--namespace",
+            "default",
+        ]
+        manifest = {
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": {
+                "name": self.LEGACY_SERVICES_STATE_LOCK,
+                "annotations": {"app.terraform.io/lock-info": lock_info},
+                "labels": {
+                    "tfstate": "true",
+                    "tfstateSecretSuffix": "terraform-state",
+                    "tfstateWorkspace": "default",
+                    "app.kubernetes.io/managed-by": "terraform",
+                },
+            },
+            "spec": {"holderIdentity": lock_id},
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json"
+        ) as manifest_file:
+            json.dump(manifest, manifest_file)
+            manifest_file.flush()
+            try:
+                execute_cmd(
+                    command + ["create", "--filename", manifest_file.name],
+                    error_string="Failed to lock legacy services state",
+                    censor_output=True,
+                    subprocess_log_level="debug",
+                )
+            except Exception:
+                output = execute_cmd(
+                    command
+                    + [
+                        "get",
+                        "lease",
+                        self.LEGACY_SERVICES_STATE_LOCK,
+                        "--output",
+                        "json",
+                    ],
+                    error_string="Failed to inspect legacy services state lock",
+                    censor_output=True,
+                    subprocess_log_level="debug",
+                )
+                lease = json.loads(output)
+                holder = lease.get("spec", {}).get("holderIdentity")
+                if holder:
+                    raise RuntimeError("Legacy services state is locked")
+                patch = [
+                    {
+                        "op": "test",
+                        "path": "/metadata/resourceVersion",
+                        "value": lease["metadata"]["resourceVersion"],
+                    },
+                    {
+                        "op": "add",
+                        "path": "/spec/holderIdentity",
+                        "value": lock_id,
+                    },
+                    {
+                        "op": "add",
+                        "path": (
+                            "/metadata/annotations/"
+                            "app.terraform.io~1lock-info"
+                            if lease["metadata"].get("annotations")
+                            else "/metadata/annotations"
+                        ),
+                        "value": (
+                            lock_info
+                            if lease["metadata"].get("annotations")
+                            else {
+                                "app.terraform.io/lock-info": lock_info
+                            }
+                        ),
+                    },
+                ]
+                execute_cmd(
+                    command
+                    + [
+                        "patch",
+                        "lease",
+                        self.LEGACY_SERVICES_STATE_LOCK,
+                        "--type",
+                        "json",
+                        "--patch",
+                        json.dumps(patch),
+                    ],
+                    error_string="Failed to lock legacy services state",
+                    censor_output=True,
+                    subprocess_log_level="debug",
+                )
+        try:
+            yield
+        finally:
+            patch = [
+                {
+                    "op": "test",
+                    "path": "/spec/holderIdentity",
+                    "value": lock_id,
+                },
+                {
+                    "op": "replace",
+                    "path": "/spec/holderIdentity",
+                    "value": None,
+                },
+                {
+                    "op": "remove",
+                    "path": "/metadata/annotations/app.terraform.io~1lock-info",
+                },
+            ]
+            execute_cmd(
+                command
+                + [
+                    "patch",
+                    "lease",
+                    self.LEGACY_SERVICES_STATE_LOCK,
+                    "--type",
+                    "json",
+                    "--patch",
+                    json.dumps(patch),
+                ],
+                error_string="Failed to unlock legacy services state",
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
+
     def _pull_legacy_services_state(
         self,
         kubernetes_config_path: str,
@@ -375,7 +528,6 @@ class TerraformWrapper:
                     f"-chdir={working_directory}",
                     "state",
                     "push",
-                    "-force",
                     state_file.name,
                 ],
                 check_return_code=True,
@@ -688,57 +840,71 @@ class TerraformWrapper:
             "container_name": backend_container_name,
             "access_key": backend_storage_access_key,
         }
-        legacy_state: Dict[str, Any] = {}
-        target_exists = False
-        if migrate_state:
-            assert self.az is not None
-            target_exists = self.az.blob_exists(
-                backend_storage_name,
-                backend_storage_access_key,
-                backend_container_name,
-                self.SERVICES_STATE_FILE,
-            )
-            legacy_exists = not target_exists
-            if target_exists:
-                kubectl = KubectlWrapper(
-                    self.os_artifacts,
-                    cluster_name,
-                    config_context=kubernetes_config_context,
-                )
-                with kubectl.context():
-                    legacy_exists = (
-                        kubectl.get_or_none(
-                            "secret",
-                            self.LEGACY_SERVICES_STATE_SECRET,
-                            namespace="default",
-                        )
-                        is not None
-                    )
-            if legacy_exists:
-                legacy_state = self._pull_legacy_services_state(
-                    kubernetes_config_path,
-                    kubernetes_config_context,
-                )
-        self.init(
-            services_directory,
-            backend_config=backend_config,
-            cleanup_state=cleanup_state,
-            refresh_creds=True,
-        )
-        if legacy_state.get("resources"):
-            if not target_exists:
-                self._push_state(services_directory, legacy_state)
-            migrated_state = self._pull_state(services_directory)
-            if (
-                not migrated_state.get("resources")
-                or migrated_state.get("lineage") != legacy_state.get("lineage")
-            ):
-                raise RuntimeError("Services state migration verification failed")
-            self._delete_legacy_services_state(
-                cluster_name,
+        migration_lock = (
+            self._lock_legacy_services_state(
                 kubernetes_config_path,
                 kubernetes_config_context,
             )
+            if migrate_state
+            else nullcontext()
+        )
+        with migration_lock:
+            legacy_state: Dict[str, Any] = {}
+            target_exists = False
+            if migrate_state:
+                assert self.az is not None
+                target_exists = self.az.blob_exists(
+                    backend_storage_name,
+                    backend_storage_access_key,
+                    backend_container_name,
+                    self.SERVICES_STATE_FILE,
+                )
+                legacy_exists = not target_exists
+                if target_exists:
+                    kubectl = KubectlWrapper(
+                        self.os_artifacts,
+                        cluster_name,
+                        config_context=kubernetes_config_context,
+                    )
+                    with kubectl.context():
+                        legacy_exists = (
+                            kubectl.get_or_none(
+                                "secret",
+                                self.LEGACY_SERVICES_STATE_SECRET,
+                                namespace="default",
+                            )
+                            is not None
+                        )
+                if legacy_exists:
+                    legacy_state = self._pull_legacy_services_state(
+                        kubernetes_config_path,
+                        kubernetes_config_context,
+                    )
+            self.init(
+                services_directory,
+                backend_config=backend_config,
+                cleanup_state=cleanup_state,
+                refresh_creds=True,
+            )
+            if legacy_state.get("resources"):
+                if not target_exists:
+                    self._push_state(services_directory, legacy_state)
+                migrated_state = self._pull_state(services_directory)
+                if (
+                    not migrated_state.get("resources")
+                    or migrated_state.get("lineage")
+                    != legacy_state.get("lineage")
+                    or migrated_state.get("serial", 0)
+                    < legacy_state.get("serial", 0)
+                ):
+                    raise RuntimeError(
+                        "Services state migration verification failed"
+                    )
+                self._delete_legacy_services_state(
+                    cluster_name,
+                    kubernetes_config_path,
+                    kubernetes_config_context,
+                )
         variables = {
             "namespace": "default",
             "prefix": cluster_name,
@@ -1775,6 +1941,7 @@ class KubectlWrapper:
         cluster_name: str = "",
         ignore_not_found: bool = False,
         namespace: str = "",
+        wait: bool = True,
     ):
         cluster_name = self._actual_cluster_name(cluster_name)
         cmd = [self.os_artifacts.kubectl, "delete", kind, name]
@@ -1782,6 +1949,8 @@ class KubectlWrapper:
             cmd.extend(["--namespace", namespace])
         if ignore_not_found:
             cmd.append("--ignore-not-found=true")
+        if not wait:
+            cmd.append("--wait=false")
         execute_cmd(
             cmd,
             check_empty_result=False,
