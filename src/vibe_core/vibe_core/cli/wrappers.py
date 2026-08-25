@@ -882,6 +882,22 @@ class TerraformWrapper:
                         kubernetes_config_path,
                         kubernetes_config_context,
                     )
+                if not target_exists and not legacy_state:
+                    kubectl = KubectlWrapper(
+                        self.os_artifacts,
+                        cluster_name,
+                        config_context=kubernetes_config_context,
+                    )
+                    with kubectl.context():
+                        existing_services = kubectl.get_or_none(
+                            "deployment",
+                            "terravibes-rest-api",
+                            namespace="default",
+                        )
+                    if existing_services is not None:
+                        raise RuntimeError(
+                            "Existing services have no recoverable OpenTofu state"
+                        )
             self.init(
                 services_directory,
                 backend_config=backend_config,

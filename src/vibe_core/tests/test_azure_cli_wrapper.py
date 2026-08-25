@@ -353,6 +353,46 @@ def test_services_state_retry_populates_empty_target() -> None:
     terraform._delete_legacy_services_state.assert_called_once()
 
 
+def test_services_state_migration_rejects_unmanaged_services() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    az = Mock()
+    az.blob_exists.return_value = False
+    terraform = TerraformWrapper(artifacts, az)
+    terraform._pull_legacy_services_state = Mock(return_value={})
+    terraform._lock_legacy_services_state = Mock(
+        return_value=nullcontext()
+    )
+
+    with patch("vibe_core.cli.wrappers.KubectlWrapper") as kubectl_class:
+        kubectl_class.return_value.context.return_value = nullcontext()
+        kubectl_class.return_value.get_or_none.return_value = {
+            "metadata": {"name": "terravibes-rest-api"}
+        }
+        with pytest.raises(
+            RuntimeError, match="no recoverable OpenTofu state"
+        ):
+            terraform.ensure_services(
+                "cluster",
+                "group",
+                "registry",
+                "kubeconfig",
+                "context",
+                "worker",
+                "cluster.example",
+                "farmai/",
+                "latest",
+                "claim",
+                "",
+                1,
+                "info",
+                "storage",
+                "terraform-state",
+                "key",
+                migrate_state=True,
+            )
+
+
 def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.private_config_dir = tmp_path
