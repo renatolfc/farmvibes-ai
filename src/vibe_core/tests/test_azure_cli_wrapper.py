@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
+import requests
 
 from vibe_core.cli import remote
 from vibe_core.cli.osartifacts import (
@@ -427,6 +428,28 @@ def test_dapr_version_reads_version_column_from_status() -> None:
         "vibe_core.cli.wrappers.execute_cmd", return_value=status
     ):
         assert dapr.version() == ["1.13.3"]
+
+
+def test_dapr_crd_upgrade_fails_closed() -> None:
+    dapr = DaprWrapper(Mock(), Mock())
+
+    with (
+        patch(
+            "vibe_core.cli.wrappers.requests.head",
+            return_value=Mock(status_code=404),
+        ),
+        pytest.raises(RuntimeError, match="Required Dapr CRD"),
+    ):
+        dapr.upgrade_crds("1.18.3")
+
+    with (
+        patch(
+            "vibe_core.cli.wrappers.requests.head",
+            side_effect=requests.ConnectionError("offline"),
+        ),
+        pytest.raises(requests.ConnectionError),
+    ):
+        dapr.upgrade_crds("1.18.3")
 
 
 def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:

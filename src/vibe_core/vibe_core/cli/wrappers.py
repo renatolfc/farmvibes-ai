@@ -2840,6 +2840,11 @@ class DaprWrapper:  # DaprWrapr 🫠
         "mcpservers.yaml",
         "workflowaccesspolicy.yaml",
     ]
+    REQUIRED_CRD_FILES = {
+        "components.yaml",
+        "configuration.yaml",
+        "subscription.yaml",
+    }
 
     def __init__(
         self,
@@ -2901,13 +2906,6 @@ class DaprWrapper:  # DaprWrapr 🫠
             if current < tuple(map(int, version.split("."))) <= target
         ]
 
-    def url_exists(self, url: str) -> bool:
-        try:
-            response = requests.head(url)
-            return response.status_code == 200
-        except requests.exceptions.RequestException:
-            return False
-
     def upgrade_crds(self, version: Optional[str] = None):
         # Upgrading dapr is a two-stage process.
         # First, we upgrade the CRDs, then OpenTofu converges the Dapr chart.
@@ -2915,9 +2913,15 @@ class DaprWrapper:  # DaprWrapr 🫠
         version = version or self._target_version()
         for crd in self.CRD_FILES:
             url = self.CRD_BASE.format(version) + crd
-            if not self.url_exists(url):
+            response = requests.head(url, timeout=30)
+            if response.status_code == 404:
+                if crd in self.REQUIRED_CRD_FILES:
+                    raise RuntimeError(
+                        f"Required Dapr CRD {crd} is missing for {version}"
+                    )
                 log(f"CRD {crd} not found at {url}, ignoring it", level="warning")
                 continue
+            response.raise_for_status()
             status.append(self.kubectl.apply_or_replace(url))
         return all(status)
 

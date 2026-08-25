@@ -260,6 +260,19 @@ def test_legacy_ingress_service_is_released_before_chart_cutover() -> None:
     )
 
 
+def test_legacy_ingress_service_rejects_unknown_owner() -> None:
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.return_value = {
+        "metadata": {"labels": {"app.kubernetes.io/instance": "someone-else"}}
+    }
+
+    with pytest.raises(RuntimeError, match="Refusing to replace"):
+        remote.remove_legacy_ingress_service(kubectl)
+
+    kubectl.delete.assert_not_called()
+
+
 def test_remote_status_keeps_previous_pair_when_url_discovery_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

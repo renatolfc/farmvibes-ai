@@ -260,8 +260,13 @@ def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
             LEGACY_INGRESS_NAMESPACE,
         )
         labels = service.get("metadata", {}).get("labels", {}) if service else {}
-        if labels.get("app.kubernetes.io/instance") != "ingress-nginx":
+        if service is None:
             return False
+        if labels.get("app.kubernetes.io/instance") != "ingress-nginx":
+            raise RuntimeError(
+                f"Refusing to replace unrecognized Service "
+                f"{LEGACY_INGRESS_NAMESPACE}/{LEGACY_INGRESS_SERVICE}"
+            )
         kubectl.delete(
             "service",
             LEGACY_INGRESS_SERVICE,
