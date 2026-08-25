@@ -307,6 +307,7 @@ def test_legacy_services_state_lock_is_released() -> None:
     def execute(command: List[str], **kwargs: Any) -> str:
         commands.append(command)
         if "create" in command:
+            json.loads(Path(command[command.index("--filename") + 1]).read_text())
             raise ValueError("lease exists")
         if "get" in command:
             return json.dumps(
@@ -409,6 +410,23 @@ def test_dapr_upgrade_path_uses_latest_patch_for_each_minor() -> None:
         "1.17.13",
         "1.18.3",
     ]
+
+
+def test_dapr_version_reads_version_column_from_status() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.dapr = "dapr"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    dapr = DaprWrapper(artifacts, kubectl)
+    status = (
+        "NAME NAMESPACE HEALTH STATUS REPLICAS VERSION AGE CREATED\n"
+        "dapr-operator dapr-system Healthy Running 1 1.13.3 1h 2026-01-01\n"
+    )
+
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd", return_value=status
+    ):
+        assert dapr.version() == ["1.13.3"]
 
 
 def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:

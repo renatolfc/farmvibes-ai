@@ -363,78 +363,79 @@ class TerraformWrapper:
             "spec": {"holderIdentity": lock_id},
         }
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json"
+            mode="w", suffix=".json", delete=False
         ) as manifest_file:
             json.dump(manifest, manifest_file)
             manifest_file.flush()
-            try:
-                execute_cmd(
-                    command + ["create", "--filename", manifest_file.name],
-                    error_string="Failed to lock legacy services state",
-                    censor_output=True,
-                    subprocess_log_level="debug",
-                )
-            except Exception:
-                output = execute_cmd(
-                    command
-                    + [
-                        "get",
-                        "lease",
-                        self.LEGACY_SERVICES_STATE_LOCK,
-                        "--output",
-                        "json",
-                    ],
-                    error_string="Failed to inspect legacy services state lock",
-                    censor_output=True,
-                    subprocess_log_level="debug",
-                )
-                lease = json.loads(output)
-                holder = lease.get("spec", {}).get("holderIdentity")
-                if holder:
-                    raise RuntimeError("Legacy services state is locked")
-                patch = [
-                    {
-                        "op": "test",
-                        "path": "/metadata/resourceVersion",
-                        "value": lease["metadata"]["resourceVersion"],
-                    },
-                    {
-                        "op": "add",
-                        "path": "/spec/holderIdentity",
-                        "value": lock_id,
-                    },
-                    {
-                        "op": "add",
-                        "path": (
-                            "/metadata/annotations/"
-                            "app.terraform.io~1lock-info"
-                            if lease["metadata"].get("annotations")
-                            else "/metadata/annotations"
-                        ),
-                        "value": (
-                            lock_info
-                            if lease["metadata"].get("annotations")
-                            else {
-                                "app.terraform.io/lock-info": lock_info
-                            }
-                        ),
-                    },
-                ]
-                execute_cmd(
-                    command
-                    + [
-                        "patch",
-                        "lease",
-                        self.LEGACY_SERVICES_STATE_LOCK,
-                        "--type",
-                        "json",
-                        "--patch",
-                        json.dumps(patch),
-                    ],
-                    error_string="Failed to lock legacy services state",
-                    censor_output=True,
-                    subprocess_log_level="debug",
-                )
+            manifest_path = manifest_file.name
+        try:
+            execute_cmd(
+                command + ["create", "--filename", manifest_path],
+                error_string="Failed to lock legacy services state",
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
+        except Exception:
+            output = execute_cmd(
+                command
+                + [
+                    "get",
+                    "lease",
+                    self.LEGACY_SERVICES_STATE_LOCK,
+                    "--output",
+                    "json",
+                ],
+                error_string="Failed to inspect legacy services state lock",
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
+            lease = json.loads(output)
+            holder = lease.get("spec", {}).get("holderIdentity")
+            if holder:
+                raise RuntimeError("Legacy services state is locked")
+            patch = [
+                {
+                    "op": "test",
+                    "path": "/metadata/resourceVersion",
+                    "value": lease["metadata"]["resourceVersion"],
+                },
+                {
+                    "op": "add",
+                    "path": "/spec/holderIdentity",
+                    "value": lock_id,
+                },
+                {
+                    "op": "add",
+                    "path": (
+                        "/metadata/annotations/"
+                        "app.terraform.io~1lock-info"
+                        if lease["metadata"].get("annotations")
+                        else "/metadata/annotations"
+                    ),
+                    "value": (
+                        lock_info
+                        if lease["metadata"].get("annotations")
+                        else {"app.terraform.io/lock-info": lock_info}
+                    ),
+                },
+            ]
+            execute_cmd(
+                command
+                + [
+                    "patch",
+                    "lease",
+                    self.LEGACY_SERVICES_STATE_LOCK,
+                    "--type",
+                    "json",
+                    "--patch",
+                    json.dumps(patch),
+                ],
+                error_string="Failed to lock legacy services state",
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
+        finally:
+            os.remove(manifest_path)
         try:
             yield
         finally:
@@ -2853,8 +2854,7 @@ class DaprWrapper:  # DaprWrapr 🫠
         self.kubectl = kubectl
 
     def _version_column(self, header: str) -> int:
-        reversed_header = list(reversed(header.split()))
-        return -reversed_header.index(self.VERSION_STRING) - 1 - 1
+        return header.split().index(self.VERSION_STRING)
 
     def _target_version(self) -> str:
         # use pkg_resources to find dapr.tf:
