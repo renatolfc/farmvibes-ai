@@ -1642,6 +1642,7 @@ def setup(
         if not dapr.upgrade_sequentially():
             log("Unable to upgrade Dapr", level="error")
             return False
+        dapr.prepare_for_terraform_reconciliation()
         dapr_updated = True
 
     terraform = TerraformWrapper(k3d.os_artifacts, az)

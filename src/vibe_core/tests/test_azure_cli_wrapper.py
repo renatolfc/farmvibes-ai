@@ -455,6 +455,28 @@ def test_dapr_crd_upgrade_fails_closed() -> None:
         dapr.upgrade_crds("1.18.3")
 
 
+def test_dapr_reconciliation_recreates_placement_statefulset() -> None:
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    dapr = DaprWrapper(Mock(), kubectl)
+
+    dapr.prepare_for_terraform_reconciliation()
+
+    kubectl.delete.assert_called_once_with(
+        "statefulset",
+        dapr.PLACEMENT_STATEFULSET,
+        ignore_not_found=True,
+        namespace="dapr-system",
+        wait=False,
+    )
+    kubectl.wait_for_delete.assert_called_once_with(
+        "statefulset",
+        dapr.PLACEMENT_STATEFULSET,
+        timeout_s=600,
+        namespace="dapr-system",
+    )
+
+
 def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
     dapr = DaprWrapper(Mock(), Mock())
     dapr.upgrade_path = Mock(return_value=["1.17.13", "1.18.3"])

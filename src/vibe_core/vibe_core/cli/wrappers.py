@@ -2818,6 +2818,7 @@ class CertManagerWrapper:
 
 class DaprWrapper:  # DaprWrapr 🫠
     VERSION_STRING = "VERSION"
+    PLACEMENT_STATEFULSET = "dapr-placement-server"
     CRD_BASE = "https://raw.githubusercontent.com/dapr/dapr/v{}/charts/dapr/crds/"
     STABLE_MINOR_VERSIONS = (
         "1.9.6",
@@ -2947,3 +2948,19 @@ class DaprWrapper:  # DaprWrapr 🫠
                 return False
             self.upgrade(version)
         return True
+
+    def prepare_for_terraform_reconciliation(self) -> None:
+        with self.kubectl.context(self.kubectl.cluster_name):
+            self.kubectl.delete(
+                "statefulset",
+                self.PLACEMENT_STATEFULSET,
+                ignore_not_found=True,
+                namespace=self.namespace,
+                wait=False,
+            )
+            self.kubectl.wait_for_delete(
+                "statefulset",
+                self.PLACEMENT_STATEFULSET,
+                timeout_s=600,
+                namespace=self.namespace,
+            )
