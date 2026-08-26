@@ -902,6 +902,22 @@ def test_cert_manager_removes_legacy_namespace_release() -> None:
     ]
 
 
+def test_cert_manager_adopts_orphaned_crds() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.helm = "helm"
+    artifacts.kubectl = "kubectl"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    cert_manager = CertManagerWrapper(artifacts, kubectl)
+    cert_manager._release = Mock(return_value=None)
+
+    with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
+        assert not cert_manager.prepare_for_terraform_reconciliation()
+
+    assert len(execute.call_args_list) == 1
+    assert "annotate" in execute.call_args.args[0]
+
+
 def test_remote_cluster_name_fits_key_vault_limit() -> None:
     assert remote.check_cluster_name_length("a" * 15)
     assert not remote.check_cluster_name_length("a" * 16)

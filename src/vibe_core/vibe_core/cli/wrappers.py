@@ -3105,21 +3105,21 @@ class CertManagerWrapper:
                 )
 
     def prepare_for_terraform_reconciliation(self) -> bool:
-        if self._release(self.LEGACY_NAMESPACE) is None:
-            return False
+        legacy_release = self._release(self.LEGACY_NAMESPACE) is not None
         with self.kubectl.context(self.kubectl.cluster_name):
-            execute_cmd(
-                [
-                    self.os_artifacts.helm,
-                    "uninstall",
-                    "cert-manager",
-                    "--namespace",
-                    self.LEGACY_NAMESPACE,
-                ],
-                check_empty_result=False,
-                error_string="Unable to remove legacy cert-manager release",
-                subprocess_log_level="debug",
-            )
+            if legacy_release:
+                execute_cmd(
+                    [
+                        self.os_artifacts.helm,
+                        "uninstall",
+                        "cert-manager",
+                        "--namespace",
+                        self.LEGACY_NAMESPACE,
+                    ],
+                    check_empty_result=False,
+                    error_string="Unable to remove legacy cert-manager release",
+                    subprocess_log_level="debug",
+                )
             execute_cmd(
                 [
                     self.os_artifacts.kubectl,
@@ -3135,7 +3135,7 @@ class CertManagerWrapper:
                 error_string="Unable to transfer cert-manager CRD ownership",
                 subprocess_log_level="debug",
             )
-        return True
+        return legacy_release
 
 
 class DaprWrapper:  # DaprWrapr 🫠
