@@ -105,12 +105,19 @@ def test_infra_replacement_does_not_restart_workloads_mid_upgrade(
     artifacts.config_dir = tmp_path
     artifacts.get_terraform_file.return_value = "/tmp/infra.tfstate"
     terraform = TerraformWrapper(artifacts)
-    terraform.init = Mock()
-    terraform.plan = Mock(return_value={})
+    events = []
+    terraform.init = Mock(side_effect=lambda *args, **kwargs: events.append("init"))
+
+    def plan(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        events.append("plan")
+        return {}
+
+    terraform.plan = Mock(side_effect=plan)
     terraform._get_replacements = Mock(return_value=["node-pool"])
     terraform._has_storage_replacement = Mock(return_value=False)
     terraform.apply = Mock()
     terraform.get_output = Mock(return_value={"state": "ready"})
+    upgrade = Mock(side_effect=lambda: events.append("upgrade"))
 
     with (
         patch("vibe_core.cli.wrappers.verify_to_proceed", return_value=True),
@@ -127,9 +134,11 @@ def test_infra_replacement_does_not_restart_workloads_mid_upgrade(
             "state",
             "key",
             False,
+            after_init=upgrade,
         )
 
     assert result == {"state": "ready"}
+    assert events[:3] == ["init", "upgrade", "plan"]
     kubectl_class.assert_not_called()
 
 

@@ -465,8 +465,6 @@ def setup_or_upgrade(
                     raise
 
         with terraform.workspace(f"farmvibes-aks-{az.cluster_name}-{az.resource_group}"):
-            if is_update:
-                az.ensure_kubernetes_version()
             infra_results = terraform.ensure_infra(
                 tenant_id,
                 subscription_id,
@@ -479,6 +477,7 @@ def setup_or_upgrade(
                 storage_access_key,
                 enable_telemetry,  # Required to create azure monitor and application insights
                 cleanup_state=True,
+                after_init=az.ensure_kubernetes_version if is_update else None,
             )
             secure_path(Path(os_artifacts.config_file("kubeconfig")), 0o600)
 

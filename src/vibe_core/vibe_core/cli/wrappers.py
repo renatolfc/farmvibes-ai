@@ -820,6 +820,7 @@ class TerraformWrapper:
         storage_access_key: str,
         enable_telemetry: bool,
         cleanup_state: bool = False,
+        after_init: Optional[Callable[[], None]] = None,
     ):
         infra_directory = os.path.join(self.os_artifacts.aks_directory, "modules", "infra")
         log("Executing OpenTofu to build out infrastructure (this may take up to 30 minutes)...")
@@ -836,6 +837,8 @@ class TerraformWrapper:
             cleanup_state=cleanup_state,
             refresh_creds=True,
         )
+        if after_init is not None:
+            after_init()
         variables = {
             "tenantId": tenant_id,
             "subscriptionId": subscription_id,
