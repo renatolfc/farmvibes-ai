@@ -531,6 +531,51 @@ def test_services_state_retry_cleans_verified_orphaned_chunks() -> None:
     terraform._delete_legacy_services_state.assert_called_once()
 
 
+def test_services_state_retry_rejects_empty_target_and_marker() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.aks_directory = "/terraform/aks"
+    az = Mock()
+    az.blob_exists.return_value = True
+    terraform = TerraformWrapper(artifacts, az)
+    terraform._legacy_services_state_secrets = Mock(
+        return_value=[
+            {
+                "metadata": {
+                    "name": f"{terraform.LEGACY_SERVICES_STATE_SECRET}-part-1"
+                }
+            }
+        ]
+    )
+    terraform._pull_state = Mock(return_value={})
+    terraform._legacy_migration_marker = Mock(return_value=(None, None))
+    terraform._lock_legacy_services_state = Mock(return_value=nullcontext())
+    terraform.init = Mock()
+    terraform._delete_legacy_services_state = Mock()
+
+    with pytest.raises(RuntimeError, match="cannot be verified"):
+        terraform.ensure_services(
+            "cluster",
+            "group",
+            "registry",
+            "kubeconfig",
+            "context",
+            "worker",
+            "cluster.example",
+            "farmai/",
+            "latest",
+            "claim",
+            "",
+            1,
+            "info",
+            "storage",
+            "terraform-state",
+            "key",
+            migrate_state=True,
+        )
+
+    terraform._delete_legacy_services_state.assert_not_called()
+
+
 def test_state_push_closes_and_removes_temporary_file(tmp_path: Path) -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.private_config_dir = tmp_path
@@ -866,7 +911,8 @@ def test_dapr_reconciliation_keeps_converged_placement() -> None:
 
 
 def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
-    kubectl = Mock()
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
     kubectl.get_or_none.return_value = {"metadata": {"name": "dapr-scheduler-server"}}
     dapr = DaprWrapper(Mock(), kubectl)
     dapr.upgrade_path = Mock(return_value=["1.17.13", "1.18.3"])
@@ -895,6 +941,7 @@ def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
         dapr.SCHEDULER_STATEFULSET,
         namespace="dapr-system",
     )
+    kubectl.context.assert_called_once_with("cluster")
 
 
 def test_dapr_rejects_newer_version() -> None:

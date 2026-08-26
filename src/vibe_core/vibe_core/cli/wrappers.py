@@ -1092,9 +1092,16 @@ class TerraformWrapper:
                     kubernetes_config_path,
                     kubernetes_config_context,
                 )
-                if marker != (
+                expected_marker = (
                     migrated_state.get("lineage"),
                     migrated_state.get("serial"),
+                )
+                if (
+                    not expected_marker[0]
+                    or expected_marker[1] is None
+                    or marker[0] is None
+                    or marker[1] is None
+                    or marker != expected_marker
                 ):
                     raise RuntimeError(
                         "Orphaned services state chunks cannot be verified"
@@ -3390,24 +3397,25 @@ class DaprWrapper:  # DaprWrapr 🫠
             )
 
     def upgrade_sequentially(self) -> bool:
-        upgrade_path = self.upgrade_path()
-        for version in upgrade_path:
-            if not self.upgrade_crds(version):
-                return False
-            self.upgrade(version)
-        if upgrade_path and self.kubectl.get_or_none(
-            "statefulset", self.SCHEDULER_STATEFULSET, namespace=self.namespace
-        ):
-            self.kubectl.restart(
-                "statefulset",
-                name=self.SCHEDULER_STATEFULSET,
-                namespace=self.namespace,
-            )
-            self.kubectl.rollout_status(
-                "statefulset",
-                self.SCHEDULER_STATEFULSET,
-                namespace=self.namespace,
-            )
+        with self.kubectl.context(self.kubectl.cluster_name):
+            upgrade_path = self.upgrade_path()
+            for version in upgrade_path:
+                if not self.upgrade_crds(version):
+                    return False
+                self.upgrade(version)
+            if upgrade_path and self.kubectl.get_or_none(
+                "statefulset", self.SCHEDULER_STATEFULSET, namespace=self.namespace
+            ):
+                self.kubectl.restart(
+                    "statefulset",
+                    name=self.SCHEDULER_STATEFULSET,
+                    namespace=self.namespace,
+                )
+                self.kubectl.rollout_status(
+                    "statefulset",
+                    self.SCHEDULER_STATEFULSET,
+                    namespace=self.namespace,
+                )
         return True
 
     def prepare_for_terraform_reconciliation(self) -> bool:
