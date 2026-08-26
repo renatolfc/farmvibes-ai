@@ -99,14 +99,6 @@ resource "helm_release" "nginx-ingress" {
     {
       name  = "service.spec.loadBalancerIP"
       value = var.public_ip_address
-    },
-    {
-      name  = "additionalArguments[0]"
-      value = "--entryPoints.web.http.redirections.entryPoint.to=websecure"
-    },
-    {
-      name  = "additionalArguments[1]"
-      value = "--entryPoints.web.http.redirections.entryPoint.scheme=https"
     }
   ]
   depends_on = [kubernetes_namespace.kubernetesnginxnamespace]

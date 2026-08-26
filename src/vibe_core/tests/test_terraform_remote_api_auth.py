@@ -32,6 +32,9 @@ def test_remote_api_auth_kubernetes_contract():
         'ingress_class_name = var.local_deployment ? "traefik" : "traefik-remote"'
         in terraform
     )
+    assert "farmvibes-https-redirect" in terraform
+    assert "traefik.ingress.kubernetes.io/router.middlewares" in terraform
+    assert "acme.cert-manager.io/http01-edit-in-place" not in terraform
     assert (
         'dynamic "tls" {\n'
         "      for_each = var.local_deployment ? [] : [1]\n"
@@ -39,7 +42,7 @@ def test_remote_api_auth_kubernetes_contract():
         "        hosts       = [var.public_ip_fqdn]\n"
         '        secret_name = "terravibes-rest-api-tls"'
     ) in terraform
-    assert '"cert-manager.io/cluster-issuer"            = "letsencrypt"' in terraform
+    assert '"cert-manager.io/cluster-issuer" = "letsencrypt"' in terraform
 
 
 def test_remote_services_use_pinned_native_images():
