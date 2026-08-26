@@ -534,7 +534,8 @@ def test_legacy_services_state_lock_is_released() -> None:
     with patch("vibe_core.cli.wrappers.execute_cmd", side_effect=execute):
         with terraform._lock_legacy_services_state(
             "kubeconfig", "context"
-        ):
+        ) as verify:
+            verify()
             commands.append(["migration"])
 
     assert "create" in commands[0]
@@ -544,9 +545,15 @@ def test_legacy_services_state_lock_is_released() -> None:
         operation["path"] == "/metadata/annotations"
         for operation in acquire
     )
-    assert commands[3] == ["migration"]
-    assert "patch" in commands[4]
-    release = json.loads(commands[4][commands[4].index("--patch") + 1])
+    assert any(
+        operation["path"] == "/spec/renewTime"
+        for operation in json.loads(
+            commands[3][commands[3].index("--patch") + 1]
+        )
+    )
+    assert commands[4] == ["migration"]
+    assert "patch" in commands[5]
+    release = json.loads(commands[5][commands[5].index("--patch") + 1])
     assert release[1] == {
         "op": "replace",
         "path": "/spec/holderIdentity",
@@ -618,6 +625,10 @@ def test_legacy_services_state_lock_recovers_when_stale() -> None:
     acquire = json.loads(commands[2][commands[2].index("--patch") + 1])
     assert any(
         operation["path"] == "/spec/holderIdentity"
+        for operation in acquire
+    )
+    assert any(
+        operation["path"] == "/spec/renewTime"
         for operation in acquire
     )
 

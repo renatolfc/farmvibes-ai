@@ -434,6 +434,11 @@ class TerraformWrapper:
                     },
                     {
                         "op": "add",
+                        "path": "/spec/renewTime",
+                        "value": acquired_at_string,
+                    },
+                    {
+                        "op": "add",
                         "path": "/spec/leaseDurationSeconds",
                         "value": self.LEGACY_LOCK_DURATION_SECONDS,
                     },
@@ -470,47 +475,45 @@ class TerraformWrapper:
         finally:
             os.remove(manifest_path)
         heartbeat_stop = threading.Event()
-        heartbeat_errors: List[Exception] = []
+        def renew() -> None:
+            patch = [
+                {
+                    "op": "test",
+                    "path": "/spec/holderIdentity",
+                    "value": lock_id,
+                },
+                {
+                    "op": "add",
+                    "path": "/spec/renewTime",
+                    "value": datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                },
+            ]
+            execute_cmd(
+                command
+                + [
+                    "patch",
+                    "lease",
+                    self.LEGACY_SERVICES_STATE_LOCK,
+                    "--type",
+                    "json",
+                    "--patch",
+                    json.dumps(patch),
+                ],
+                error_string="Failed to renew legacy services state lock",
+                censor_output=True,
+                subprocess_log_level="debug",
+            )
 
         def heartbeat() -> None:
             while not heartbeat_stop.wait(
                 self.LEGACY_LOCK_DURATION_SECONDS / 3
             ):
-                patch = [
-                    {
-                        "op": "test",
-                        "path": "/spec/holderIdentity",
-                        "value": lock_id,
-                    },
-                    {
-                        "op": "add",
-                        "path": "/spec/renewTime",
-                        "value": datetime.now(timezone.utc)
-                        .isoformat()
-                        .replace("+00:00", "Z"),
-                    },
-                ]
                 try:
-                    execute_cmd(
-                        command
-                        + [
-                            "patch",
-                            "lease",
-                            self.LEGACY_SERVICES_STATE_LOCK,
-                            "--type",
-                            "json",
-                            "--patch",
-                            json.dumps(patch),
-                        ],
-                        error_string=(
-                            "Failed to renew legacy services state lock"
-                        ),
-                        censor_output=True,
-                        subprocess_log_level="debug",
-                    )
-                except Exception as error:
-                    heartbeat_errors.append(error)
-                    return
+                    renew()
+                except Exception:
+                    continue
 
         heartbeat_thread = threading.Thread(
             target=heartbeat,
@@ -519,7 +522,7 @@ class TerraformWrapper:
         )
         heartbeat_thread.start()
         try:
-            yield
+            yield renew
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join()
@@ -554,10 +557,6 @@ class TerraformWrapper:
                 censor_output=True,
                 subprocess_log_level="debug",
             )
-            if heartbeat_errors:
-                raise RuntimeError(
-                    "Legacy services state lock renewal failed"
-                ) from heartbeat_errors[0]
 
     def _pull_legacy_services_state(
         self,
@@ -1002,7 +1001,7 @@ class TerraformWrapper:
             if migrate_state
             else nullcontext()
         )
-        with migration_lock:
+        with migration_lock as verify_migration_lock:
             legacy_state: Dict[str, Any] = {}
             orphaned_legacy_chunks = False
             target_exists = False
@@ -1058,6 +1057,8 @@ class TerraformWrapper:
                     else {}
                 )
                 if not migrated_state:
+                    if verify_migration_lock is not None:
+                        verify_migration_lock()
                     self._push_state(services_directory, legacy_state)
                     migrated_state = self._pull_state(services_directory)
                 if (
@@ -1070,6 +1071,8 @@ class TerraformWrapper:
                     raise RuntimeError(
                         "Services state migration verification failed"
                     )
+                if verify_migration_lock is not None:
+                    verify_migration_lock()
                 self._mark_legacy_services_state_migrated(
                     kubernetes_config_path,
                     kubernetes_config_context,
@@ -1093,6 +1096,8 @@ class TerraformWrapper:
                     raise RuntimeError(
                         "Orphaned services state chunks cannot be verified"
                     )
+                if verify_migration_lock is not None:
+                    verify_migration_lock()
                 self._delete_legacy_services_state(
                     cluster_name,
                     kubernetes_config_path,
