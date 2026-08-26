@@ -1,11 +1,17 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+resource "kubernetes_namespace" "cert_manager" {
+  metadata {
+    name = "cert-manager"
+  }
+}
+
 resource "helm_release" "letsencrypt" {
   name       = "cert-manager"
   repository = "https://charts.jetstack.io"
   chart      = "cert-manager"
-  namespace  = "kube-system"
+  namespace  = kubernetes_namespace.cert_manager.metadata[0].name
   version    = "v1.21.1"
   atomic     = true
   timeout    = 600
@@ -21,7 +27,7 @@ resource "helm_release" "letsencrypt" {
     }
   ]
 
-  depends_on = [helm_release.nginx-ingress]
+  depends_on = [helm_release.nginx-ingress, kubernetes_namespace.cert_manager]
 }
 
 resource "kubectl_manifest" "clusterissuer" {

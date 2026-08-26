@@ -2990,6 +2990,8 @@ class DockerWrapper:
 
 class CertManagerWrapper:
     TARGET_VERSION = "1.21.1"
+    NAMESPACE = "cert-manager"
+    LEGACY_NAMESPACE = "kube-system"
     STABLE_MINOR_VERSIONS = (
         "1.12.17",
         "1.13.6",
@@ -3015,14 +3017,14 @@ class CertManagerWrapper:
     def _version_tuple(version: str) -> Tuple[int, ...]:
         return tuple(map(int, version.lstrip("v").split(".")))
 
-    def version(self) -> Optional[str]:
+    def _release(self, namespace: str) -> Optional[Dict[str, Any]]:
         with self.kubectl.context(self.kubectl.cluster_name):
             output = execute_cmd(
                 [
                     self.os_artifacts.helm,
                     "list",
                     "--namespace",
-                    "kube-system",
+                    namespace,
                     "--filter",
                     "^cert-manager$",
                     "--output",
@@ -3033,9 +3035,17 @@ class CertManagerWrapper:
                 subprocess_log_level="debug",
             )
         releases = json.loads(output or "[]")
-        if not releases:
-            return None
-        return releases[0]["app_version"].lstrip("v")
+        return releases[0] if releases else None
+
+    def version(self) -> Optional[str]:
+        release = self._release(self.NAMESPACE) or self._release(
+            self.LEGACY_NAMESPACE
+        )
+        return (
+            release["app_version"].lstrip("v")
+            if release is not None
+            else None
+        )
 
     def upgrade_path(self) -> List[str]:
         current = self.version()
@@ -3053,6 +3063,11 @@ class CertManagerWrapper:
         return bool(self.upgrade_path())
 
     def upgrade_sequentially(self) -> None:
+        namespace = (
+            self.LEGACY_NAMESPACE
+            if self._release(self.LEGACY_NAMESPACE)
+            else self.NAMESPACE
+        )
         for version in self.upgrade_path():
             crd_flag = "installCRDs" if self._version_tuple(version) < (1, 15) else "crds.enabled"
             log(f"Upgrading cert-manager to {version}")
@@ -3066,13 +3081,18 @@ class CertManagerWrapper:
                         "--repo",
                         "https://charts.jetstack.io",
                         "--namespace",
-                        "kube-system",
+                        namespace,
                         "--version",
                         f"v{version}",
                         "--set",
                         f"{crd_flag}=true",
                         "--set",
                         r"nodeSelector.kubernetes\.io/os=linux",
+                        *(
+                            ["--set", "startupapicheck.enabled=false"]
+                            if namespace == self.LEGACY_NAMESPACE
+                            else []
+                        ),
                         "--atomic",
                         "--timeout",
                         "10m",
@@ -3081,6 +3101,24 @@ class CertManagerWrapper:
                     error_string=f"Unable to upgrade cert-manager to {version}",
                     subprocess_log_level="debug",
                 )
+
+    def prepare_for_terraform_reconciliation(self) -> bool:
+        if self._release(self.LEGACY_NAMESPACE) is None:
+            return False
+        with self.kubectl.context(self.kubectl.cluster_name):
+            execute_cmd(
+                [
+                    self.os_artifacts.helm,
+                    "uninstall",
+                    "cert-manager",
+                    "--namespace",
+                    self.LEGACY_NAMESPACE,
+                ],
+                check_empty_result=False,
+                error_string="Unable to remove legacy cert-manager release",
+                subprocess_log_level="debug",
+            )
+        return True
 
 
 class DaprWrapper:  # DaprWrapr 🫠

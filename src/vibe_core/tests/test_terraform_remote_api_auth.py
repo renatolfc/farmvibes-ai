@@ -119,6 +119,8 @@ def test_maintenance_infrastructure_versions_and_platforms():
     assert 'version    = "41.3.0"' in ingress
     cert_manager = (kubernetes / "cert.tf").read_text()
     assert 'version    = "v1.21.1"' in cert_manager
+    assert 'name = "cert-manager"' in cert_manager
+    assert "namespace  = kubernetes_namespace.cert_manager" in cert_manager
     assert "atomic     = true" in cert_manager
     assert "timeout    = 600" in cert_manager
     assert 'name  = "crds.enabled"' in cert_manager

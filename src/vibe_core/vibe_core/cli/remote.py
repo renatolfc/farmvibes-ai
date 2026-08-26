@@ -484,6 +484,8 @@ def setup_or_upgrade(
             cert_manager = CertManagerWrapper(kubectl.os_artifacts, kubectl)
             if is_update and cert_manager.needs_upgrade():
                 cert_manager.upgrade_sequentially()
+            if is_update:
+                cert_manager.prepare_for_terraform_reconciliation()
             dapr = DaprWrapper(kubectl.os_artifacts, kubectl)
             if is_update and dapr.needs_upgrade():
                 log("Upgrading Dapr one supported minor at a time")
