@@ -2609,7 +2609,9 @@ class KubectlWrapper:
             time.sleep(1)
         raise ValueError(f"Timed out waiting for {kind} {name} to be deleted")
 
-    def rollout_status(self, kind: str, name: str, timeout_s: int = 600):
+    def rollout_status(
+        self, kind: str, name: str, timeout_s: int = 600, namespace: str = ""
+    ):
         cmd = [
             self.os_artifacts.kubectl,
             "rollout",
@@ -2617,13 +2619,22 @@ class KubectlWrapper:
             f"{kind}/{name}",
             f"--timeout={timeout_s}s",
         ]
+        if namespace:
+            cmd.extend(["--namespace", namespace])
         execute_cmd(
             cmd,
             error_string=f"Unable to roll out {kind} {name}",
             check_empty_result=False,
         )
 
-    def restart(self, kind: str, selectors: List[str] = [], name: str = "", cluster_name: str = ""):
+    def restart(
+        self,
+        kind: str,
+        selectors: List[str] = [],
+        name: str = "",
+        cluster_name: str = "",
+        namespace: str = "",
+    ):
         if not name and not selectors:
             raise ValueError("Either name or selectors must be provided")
         if name and selectors:
@@ -2634,6 +2645,8 @@ class KubectlWrapper:
             cmd += [name]
         else:
             cmd += ["-l", ",".join(selectors)]
+        if namespace:
+            cmd.extend(["--namespace", namespace])
         execute_cmd(
             cmd,
             error_string=f"Unable to restart {kind} with selectors {selectors}",
@@ -3208,6 +3221,7 @@ class CertManagerWrapper:
 class DaprWrapper:  # DaprWrapr 🫠
     VERSION_STRING = "VERSION"
     PLACEMENT_STATEFULSET = "dapr-placement-server"
+    SCHEDULER_STATEFULSET = "dapr-scheduler-server"
     CRD_BASE = "https://raw.githubusercontent.com/dapr/dapr/v{}/charts/dapr/crds/"
     STABLE_MINOR_VERSIONS = (
         "1.9.6",
@@ -3371,10 +3385,24 @@ class DaprWrapper:  # DaprWrapr 🫠
             )
 
     def upgrade_sequentially(self) -> bool:
-        for version in self.upgrade_path():
+        upgrade_path = self.upgrade_path()
+        for version in upgrade_path:
             if not self.upgrade_crds(version):
                 return False
             self.upgrade(version)
+        if upgrade_path and self.kubectl.get_or_none(
+            "statefulset", self.SCHEDULER_STATEFULSET, namespace=self.namespace
+        ):
+            self.kubectl.restart(
+                "statefulset",
+                name=self.SCHEDULER_STATEFULSET,
+                namespace=self.namespace,
+            )
+            self.kubectl.rollout_status(
+                "statefulset",
+                self.SCHEDULER_STATEFULSET,
+                namespace=self.namespace,
+            )
         return True
 
     def prepare_for_terraform_reconciliation(self) -> bool:

@@ -866,7 +866,9 @@ def test_dapr_reconciliation_keeps_converged_placement() -> None:
 
 
 def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
-    dapr = DaprWrapper(Mock(), Mock())
+    kubectl = Mock()
+    kubectl.get_or_none.return_value = {"metadata": {"name": "dapr-scheduler-server"}}
+    dapr = DaprWrapper(Mock(), kubectl)
     dapr.upgrade_path = Mock(return_value=["1.17.13", "1.18.3"])
     events = []
     dapr.upgrade_crds = Mock(
@@ -883,6 +885,16 @@ def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
         ("crds", "1.18.3"),
         ("runtime", "1.18.3"),
     ]
+    kubectl.restart.assert_called_once_with(
+        "statefulset",
+        name=dapr.SCHEDULER_STATEFULSET,
+        namespace="dapr-system",
+    )
+    kubectl.rollout_status.assert_called_once_with(
+        "statefulset",
+        dapr.SCHEDULER_STATEFULSET,
+        namespace="dapr-system",
+    )
 
 
 def test_dapr_rejects_newer_version() -> None:
