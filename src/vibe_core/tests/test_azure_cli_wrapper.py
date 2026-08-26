@@ -930,25 +930,44 @@ def test_cert_manager_removes_legacy_namespace_release() -> None:
     kubectl = Mock(cluster_name="cluster")
     kubectl.context.return_value = nullcontext()
     cert_manager = CertManagerWrapper(artifacts, kubectl)
-    cert_manager._release = Mock(
-        side_effect=lambda namespace: (
-            {"app_version": "v1.21.1"}
-            if namespace == cert_manager.LEGACY_NAMESPACE
-            else None
-        )
+    cert_manager._releases = Mock(
+        return_value=[
+            {
+                "app_version": "v1.21.1",
+                "namespace": cert_manager.LEGACY_NAMESPACE,
+            }
+        ]
     )
 
-    with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
+    crds = json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {
+                        "name": "certificates.cert-manager.io",
+                        "annotations": {
+                            "meta.helm.sh/release-name": "cert-manager",
+                            "meta.helm.sh/release-namespace": "kube-system",
+                        },
+                    }
+                }
+            ]
+        }
+    )
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd",
+        side_effect=[crds, "", ""],
+    ) as execute:
         assert cert_manager.prepare_for_terraform_reconciliation()
 
-    assert execute.call_args_list[0].args[0] == [
+    assert execute.call_args_list[1].args[0] == [
         "helm",
         "uninstall",
         "cert-manager",
         "--namespace",
         "kube-system",
     ]
-    assert execute.call_args_list[1].args[0] == [
+    assert execute.call_args_list[2].args[0] == [
         artifacts.kubectl,
         "annotate",
         "customresourcedefinitions",
@@ -967,13 +986,68 @@ def test_cert_manager_adopts_orphaned_crds() -> None:
     kubectl = Mock(cluster_name="cluster")
     kubectl.context.return_value = nullcontext()
     cert_manager = CertManagerWrapper(artifacts, kubectl)
-    cert_manager._release = Mock(return_value=None)
+    cert_manager._releases = Mock(return_value=[])
 
-    with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd",
+        side_effect=['{"items":[{"metadata":{"annotations":{}}}]}', ""],
+    ) as execute:
         assert not cert_manager.prepare_for_terraform_reconciliation()
 
-    assert len(execute.call_args_list) == 1
-    assert "annotate" in execute.call_args.args[0]
+    assert len(execute.call_args_list) == 2
+    assert "annotate" in execute.call_args_list[1].args[0]
+
+
+def test_cert_manager_rejects_release_in_unmanaged_namespace() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.helm = "helm"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    cert_manager = CertManagerWrapper(artifacts, kubectl)
+
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd",
+        return_value='[{"name":"cert-manager","namespace":"other"}]',
+    ) as execute:
+        with pytest.raises(RuntimeError, match="outside the supported namespaces"):
+            cert_manager.prepare_for_terraform_reconciliation()
+
+    execute.assert_called_once()
+
+
+def test_cert_manager_rejects_unmanaged_crd_ownership_before_changes() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.kubectl = "kubectl"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    cert_manager = CertManagerWrapper(artifacts, kubectl)
+    cert_manager._releases = Mock(
+        return_value=[{"namespace": cert_manager.LEGACY_NAMESPACE}]
+    )
+    crds = json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {
+                        "name": "certificates.cert-manager.io",
+                        "annotations": {
+                            "meta.helm.sh/release-name": "cert-manager",
+                            "meta.helm.sh/release-namespace": "other",
+                        },
+                    }
+                }
+            ]
+        }
+    )
+
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd",
+        return_value=crds,
+    ) as execute:
+        with pytest.raises(RuntimeError, match="Refusing to take ownership"):
+            cert_manager.prepare_for_terraform_reconciliation()
+
+    execute.assert_called_once()
 
 
 def test_remote_cluster_name_fits_key_vault_limit() -> None:

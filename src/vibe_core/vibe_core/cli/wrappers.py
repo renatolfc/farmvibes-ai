@@ -3019,7 +3019,7 @@ class CertManagerWrapper:
     def _version_tuple(version: str) -> Tuple[int, ...]:
         return tuple(map(int, version.lstrip("v").split(".")))
 
-    def _release(self, namespace: str) -> Optional[Dict[str, Any]]:
+    def _releases(self) -> List[Dict[str, Any]]:
         with self.kubectl.context(self.kubectl.cluster_name):
             output = execute_cmd(
                 [
@@ -3036,14 +3036,62 @@ class CertManagerWrapper:
                 subprocess_log_level="debug",
             )
         releases = json.loads(output or "[]")
+        allowed_namespaces = {self.NAMESPACE, self.LEGACY_NAMESPACE}
+        unexpected_namespaces = sorted(
+            {
+                str(release.get("namespace"))
+                for release in releases
+                if release.get("namespace") not in allowed_namespaces
+            }
+        )
+        if unexpected_namespaces:
+            raise RuntimeError(
+                "Refusing to modify cert-manager owned outside the supported "
+                f"namespaces: {', '.join(unexpected_namespaces)}"
+            )
+        return releases
+
+    def _release(self, namespace: str) -> Optional[Dict[str, Any]]:
         return next(
             (
                 release
-                for release in releases
+                for release in self._releases()
                 if release.get("namespace") == namespace
             ),
             None,
         )
+
+    def _validate_crd_ownership(self) -> None:
+        with self.kubectl.context(self.kubectl.cluster_name):
+            output = execute_cmd(
+                [
+                    self.os_artifacts.kubectl,
+                    "get",
+                    "customresourcedefinitions",
+                    "--selector",
+                    "app.kubernetes.io/instance=cert-manager",
+                    "--output",
+                    "json",
+                ],
+                check_empty_result=False,
+                error_string="Unable to inspect cert-manager CRD ownership",
+                subprocess_log_level="debug",
+            )
+        for crd in json.loads(output)["items"]:
+            metadata = crd.get("metadata", {})
+            annotations = metadata.get("annotations") or {}
+            release_name = annotations.get("meta.helm.sh/release-name")
+            release_namespace = annotations.get("meta.helm.sh/release-namespace")
+            if release_name is None and release_namespace is None:
+                continue
+            if release_name != "cert-manager" or release_namespace not in {
+                self.NAMESPACE,
+                self.LEGACY_NAMESPACE,
+            }:
+                raise RuntimeError(
+                    "Refusing to take ownership of cert-manager CRD "
+                    f"{metadata.get('name', '<unknown>')}"
+                )
 
     def version(self) -> Optional[str]:
         release = self._release(self.NAMESPACE) or self._release(
@@ -3116,7 +3164,12 @@ class CertManagerWrapper:
                 )
 
     def prepare_for_terraform_reconciliation(self) -> bool:
-        legacy_release = self._release(self.LEGACY_NAMESPACE) is not None
+        releases = self._releases()
+        legacy_release = any(
+            release.get("namespace") == self.LEGACY_NAMESPACE
+            for release in releases
+        )
+        self._validate_crd_ownership()
         with self.kubectl.context(self.kubectl.cluster_name):
             if legacy_release:
                 execute_cmd(
