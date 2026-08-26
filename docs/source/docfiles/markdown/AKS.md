@@ -323,19 +323,47 @@ The first update from the legacy Helm services stops those workloads, preserves 
 workflow state, and resets transient RabbitMQ queues before installing the native services. Do not
 run this migration while workflows are active. A failed Redis restore is retried by the next update.
 
-Infrastructure updates also perform the following one-time migrations:
+### Upgrading an existing cluster
 
-- Existing Terraform state remains compatible and is read by OpenTofu.
-- The services state moves from the in-cluster Kubernetes Secret backend to the cluster's Azure
-  Blob backend. The old Secret is deleted only after the Azure state lineage is verified.
-- The Blob backend enables versioning and 14-day blob/container soft delete.
-- Dapr and cert-manager advance one supported minor version at a time before the final chart
-  versions are applied.
-- The NGINX Inc controller is replaced by Traefik using the `traefik-remote`
-  IngressClass.
-- AKS node pools move from Mariner to Azure Linux 3, which can roll/reimage nodes.
+`remote update` is a coordinated, forward-only migration. Allow a maintenance window, make sure no
+workflows are running, and back up any data or customer-managed Kubernetes resources before
+starting. The update performs these phases in order:
 
-Allow a maintenance window for remote updates and make sure no workflows are running.
+1. **OpenTofu and providers:** Existing Terraform state filenames and workspaces are retained.
+   OpenTofu 1.12.6 runs `init -upgrade` before applying the new AzureRM, Kubernetes, Helm, kubectl,
+   and random providers.
+2. **AKS version and node pools:** Clusters older than Kubernetes 1.32 advance through Azure's
+   offered minors. Intermediate upgrades include the node pools; the final 1.32 step updates only
+   the control plane. OpenTofu then rotates the Mariner pools through temporary pool names and
+   recreates them on Azure Linux 3. The update stops before pool changes if Azure offers no valid
+   upgrade path.
+3. **cert-manager:** The existing release advances through the latest patch of each supported
+   minor. Legacy releases are moved from `kube-system` to the dedicated `cert-manager` namespace;
+   CRD ownership is transferred and the existing ClusterIssuer account Secret remains in
+   `kube-system`.
+4. **Dapr:** CRDs are verified and applied before each runtime step. Previously shipped versions
+   advance one minor at a time through Dapr 1.18.3. Placement is recreated only when the final HA
+   chart requires it.
+5. **Ingress:** The CLI verifies and deletes only the expected Helm-owned legacy NGINX
+   LoadBalancer Service, then waits for its Azure finalizer before Traefik claims the same static
+   IP and DNS label. The application uses the `traefik-remote` IngressClass. HTTPS redirection is
+   scoped to the application Ingress so cert-manager's separate HTTP-01 solver remains reachable.
+6. **Services state:** The CLI acquires and renews the Kubernetes backend Lease, reconstructs
+   chunked state Secrets, initializes Azure Blob state, pushes without forcing, and verifies
+   lineage and serial before deleting the legacy Secrets. The Azure backend enables versioning and
+   14-day blob/container soft delete.
+7. **Workloads:** Backend deployments are restarted and each rollout is checked. Cache is restarted
+   once more after Dapr is ready so its subscriptions are registered.
+
+If an update is interrupted, run the same `remote update` command again. Completed phases are
+detected from AKS, Helm, Kubernetes, and state metadata. Partial cert-manager ownership transfer,
+Dapr reconciliation, empty Azure state initialization, and legacy state-Secret cleanup are
+retryable. Ambiguous resource ownership, missing state, incomplete chunks, lock loss, or failed
+lineage/serial verification stop the update without deleting the authoritative source state.
+
+This is not a downgrade workflow. After Dapr CRDs, provider state, ingress ownership, or the Azure
+Blob backend have moved forward, recover by fixing the reported condition and rerunning
+`remote update`; do not run an older CLI against the migrated cluster.
 
 An authorized operator can recover a missing local token file by running `farmvibes-ai remote
 status`. Rotate a token by adding `--rotate-api-token` to `remote update`; this invalidates clients
