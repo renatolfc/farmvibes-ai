@@ -1921,6 +1921,71 @@ class AzureCliWrapper:
             capture_output=True,
         ).strip()
 
+    def ensure_kubernetes_version(
+        self, minimum_version: Tuple[int, int] = (1, 32)
+    ) -> None:
+        current = self.get_kubernetes_version()
+        while tuple(map(int, current.split(".")[:2])) < minimum_version:
+            output = execute_cmd(
+                [
+                    self.os_artifacts.az,
+                    "aks",
+                    "get-upgrades",
+                    "--name",
+                    self.cluster_name,
+                    "--resource-group",
+                    self.resource_group,
+                    "--query",
+                    "controlPlaneProfile.upgrades[].kubernetesVersion",
+                    "-o",
+                    "json",
+                ],
+                error_string="Couldn't get supported AKS upgrades",
+                subprocess_log_level="debug",
+            )
+            candidates = [
+                version
+                for version in json.loads(output)
+                if tuple(map(int, version.split(".")))
+                > tuple(map(int, current.split(".")))
+            ]
+            if not candidates:
+                raise RuntimeError(
+                    f"AKS {current} cannot be upgraded to support AzureLinux3"
+                )
+            next_minor = min(
+                tuple(map(int, version.split(".")[:2]))
+                for version in candidates
+            )
+            target = max(
+                (
+                    version
+                    for version in candidates
+                    if tuple(map(int, version.split(".")[:2]))
+                    == next_minor
+                ),
+                key=lambda version: tuple(map(int, version.split("."))),
+            )
+            log(f"Upgrading AKS from {current} to {target}")
+            execute_cmd(
+                [
+                    self.os_artifacts.az,
+                    "aks",
+                    "upgrade",
+                    "--name",
+                    self.cluster_name,
+                    "--resource-group",
+                    self.resource_group,
+                    "--kubernetes-version",
+                    target,
+                    "--yes",
+                ],
+                check_empty_result=False,
+                error_string=f"Couldn't upgrade AKS to {target}",
+                subprocess_log_level="debug",
+            )
+            current = self.get_kubernetes_version()
+
     def ensure_azurerm_backend(
         self,
         location: str,

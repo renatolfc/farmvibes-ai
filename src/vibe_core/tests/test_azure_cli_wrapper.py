@@ -39,6 +39,38 @@ def test_get_storage_account_key_accepts_wrapped_azure_cli_response() -> None:
         assert az.get_storage_account_key("storage") == "storage-key"
 
 
+def test_aks_upgrade_advances_one_minor_at_a_time() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.az = "az"
+    az = AzureCliWrapper(artifacts, "cluster", "group")
+    versions = Mock(
+        side_effect=["1.30.9", "1.31.8", "1.32.7"]
+    )
+    az.get_kubernetes_version = versions
+
+    def execute(command: List[str], **kwargs: Any) -> str:
+        if "get-upgrades" in command:
+            return (
+                '["1.31.7", "1.31.8"]'
+                if versions.call_count == 1
+                else '["1.32.7"]'
+            )
+        return ""
+
+    with patch("vibe_core.cli.wrappers.execute_cmd", side_effect=execute) as run:
+        az.ensure_kubernetes_version()
+
+    upgrades = [
+        call.args[0]
+        for call in run.call_args_list
+        if "upgrade" in call.args[0]
+    ]
+    assert [
+        command[command.index("--kubernetes-version") + 1]
+        for command in upgrades
+    ] == ["1.31.8", "1.32.7"]
+
+
 def test_state_storage_hardening_enables_versioning_and_soft_delete() -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.az = "az"

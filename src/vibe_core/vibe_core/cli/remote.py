@@ -460,6 +460,8 @@ def setup_or_upgrade(
                     raise
 
         with terraform.workspace(f"farmvibes-aks-{az.cluster_name}-{az.resource_group}"):
+            if is_update:
+                az.ensure_kubernetes_version()
             infra_results = terraform.ensure_infra(
                 tenant_id,
                 subscription_id,
