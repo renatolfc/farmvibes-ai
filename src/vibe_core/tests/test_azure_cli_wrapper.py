@@ -741,6 +741,14 @@ def test_dapr_upgrade_path_uses_latest_patch_for_each_minor() -> None:
     ]
 
 
+def test_cert_manager_rejects_newer_version() -> None:
+    cert_manager = CertManagerWrapper(Mock(), Mock())
+    cert_manager.version = Mock(return_value="1.22.0")
+
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        cert_manager.needs_upgrade()
+
+
 def test_dapr_version_reads_version_column_from_status() -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.dapr = "dapr"
@@ -866,6 +874,17 @@ def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
         ("crds", "1.18.3"),
         ("runtime", "1.18.3"),
     ]
+
+
+def test_dapr_rejects_newer_version() -> None:
+    dapr = DaprWrapper(Mock(), Mock())
+    dapr.version = Mock(return_value=["1.19.0"])
+    dapr._target_version = Mock(return_value="1.18.3")
+
+    with pytest.raises(RuntimeError, match="newer than"):
+        dapr.needs_upgrade()
+    with pytest.raises(RuntimeError, match="newer than"):
+        dapr.upgrade_path()
 
 
 def test_cert_manager_upgrade_path_uses_latest_patch_for_each_minor() -> None:

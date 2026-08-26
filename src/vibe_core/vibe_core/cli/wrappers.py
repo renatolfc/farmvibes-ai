@@ -3061,6 +3061,11 @@ class CertManagerWrapper:
             return []
         current_tuple = self._version_tuple(current)
         target_tuple = self._version_tuple(self.TARGET_VERSION)
+        if current_tuple > target_tuple:
+            raise RuntimeError(
+                f"Installed cert-manager {current} is newer than supported "
+                f"{self.TARGET_VERSION}"
+            )
         return [
             version
             for version in self.STABLE_MINOR_VERSIONS
@@ -3246,6 +3251,10 @@ class DaprWrapper:  # DaprWrapr 🫠
     def needs_upgrade(self):
         version_tuple = tuple(map(int, self._target_version().split(".")))
         current_versions_tuples = [tuple(map(int, v.split("."))) for v in self.version()]
+        if any(version > version_tuple for version in current_versions_tuples):
+            raise RuntimeError(
+                "Installed Dapr version is newer than the supported target"
+            )
         return len(current_versions_tuples) == 0 or any(
             [v < version_tuple for v in current_versions_tuples if v > (1, 0, 0)]
         )
@@ -3260,6 +3269,10 @@ class DaprWrapper:  # DaprWrapr 🫠
             return []
         current = min(current_versions)
         target = tuple(map(int, self._target_version().split(".")))
+        if any(version > target for version in current_versions):
+            raise RuntimeError(
+                "Installed Dapr version is newer than the supported target"
+            )
         return [
             version
             for version in self.STABLE_MINOR_VERSIONS
