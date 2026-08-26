@@ -257,7 +257,7 @@ def quiesce_remote_services(kubectl: KubectlWrapper) -> Dict[str, int]:
 
 def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
     with kubectl.context():
-        removed = False
+        owned_services = []
         for name in LEGACY_INGRESS_SERVICES:
             service = kubectl.get_or_none(
                 "service", name, LEGACY_INGRESS_NAMESPACE
@@ -274,6 +274,8 @@ def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
                     f"Refusing to replace unrecognized Service "
                     f"{LEGACY_INGRESS_NAMESPACE}/{name}"
                 )
+            owned_services.append(name)
+        for name in owned_services:
             kubectl.delete(
                 "service",
                 name,
@@ -286,8 +288,7 @@ def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
                 timeout_s=600,
                 namespace=LEGACY_INGRESS_NAMESPACE,
             )
-            removed = True
-    return removed
+    return bool(owned_services)
 
 
 def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> bool:

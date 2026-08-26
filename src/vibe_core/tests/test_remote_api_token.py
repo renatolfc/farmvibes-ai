@@ -277,6 +277,27 @@ def test_legacy_ingress_service_rejects_unknown_owner() -> None:
     kubectl.delete.assert_not_called()
 
 
+def test_legacy_ingress_validates_all_services_before_deletion() -> None:
+    kubectl = Mock(spec=KubectlWrapper)
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.side_effect = [
+        {
+            "metadata": {
+                "labels": {
+                    "app.kubernetes.io/managed-by": "Helm",
+                    "app.kubernetes.io/instance": "ingress-nginx",
+                }
+            }
+        },
+        {"metadata": {"labels": {}}},
+    ]
+
+    with pytest.raises(RuntimeError, match="Refusing to replace"):
+        remote.remove_legacy_ingress_service(kubectl)
+
+    kubectl.delete.assert_not_called()
+
+
 def test_remote_status_keeps_previous_pair_when_url_discovery_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
