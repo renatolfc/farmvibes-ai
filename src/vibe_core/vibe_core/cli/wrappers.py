@@ -1967,20 +1967,22 @@ class AzureCliWrapper:
                 key=lambda version: tuple(map(int, version.split("."))),
             )
             log(f"Upgrading AKS from {current} to {target}")
+            command = [
+                self.os_artifacts.az,
+                "aks",
+                "upgrade",
+                "--name",
+                self.cluster_name,
+                "--resource-group",
+                self.resource_group,
+                "--kubernetes-version",
+                target,
+                "--yes",
+            ]
+            if next_minor >= minimum_version:
+                command.insert(-1, "--control-plane-only")
             execute_cmd(
-                [
-                    self.os_artifacts.az,
-                    "aks",
-                    "upgrade",
-                    "--name",
-                    self.cluster_name,
-                    "--resource-group",
-                    self.resource_group,
-                    "--kubernetes-version",
-                    target,
-                    "--control-plane-only",
-                    "--yes",
-                ],
+                command,
                 check_empty_result=False,
                 error_string=f"Couldn't upgrade AKS to {target}",
                 subprocess_log_level="debug",

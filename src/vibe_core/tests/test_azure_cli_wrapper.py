@@ -69,7 +69,8 @@ def test_aks_upgrade_advances_one_minor_at_a_time() -> None:
         command[command.index("--kubernetes-version") + 1]
         for command in upgrades
     ] == ["1.31.8", "1.32.7"]
-    assert all("--control-plane-only" in command for command in upgrades)
+    assert "--control-plane-only" not in upgrades[0]
+    assert "--control-plane-only" in upgrades[1]
 
 
 def test_state_storage_hardening_enables_versioning_and_soft_delete() -> None:
