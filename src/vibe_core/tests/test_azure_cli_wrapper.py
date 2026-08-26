@@ -865,6 +865,24 @@ def test_cert_manager_upgrade_path_uses_latest_patch_for_each_minor() -> None:
     ]
 
 
+def test_cert_manager_release_discovery_handles_missing_namespace() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.helm = "helm"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    cert_manager = CertManagerWrapper(artifacts, kubectl)
+
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd",
+        return_value=(
+            '[{"name":"cert-manager","namespace":"kube-system",'
+            '"app_version":"v1.21.1"}]'
+        ),
+    ):
+        assert cert_manager._release("cert-manager") is None
+        assert cert_manager._release("kube-system") is not None
+
+
 def test_cert_manager_removes_legacy_namespace_release() -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.helm = "helm"

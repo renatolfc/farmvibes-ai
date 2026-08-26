@@ -3025,8 +3025,7 @@ class CertManagerWrapper:
                 [
                     self.os_artifacts.helm,
                     "list",
-                    "--namespace",
-                    namespace,
+                    "--all-namespaces",
                     "--filter",
                     "^cert-manager$",
                     "--output",
@@ -3037,7 +3036,14 @@ class CertManagerWrapper:
                 subprocess_log_level="debug",
             )
         releases = json.loads(output or "[]")
-        return releases[0] if releases else None
+        return next(
+            (
+                release
+                for release in releases
+                if release.get("namespace") == namespace
+            ),
+            None,
+        )
 
     def version(self) -> Optional[str]:
         release = self._release(self.NAMESPACE) or self._release(
