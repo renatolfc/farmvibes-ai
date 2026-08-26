@@ -265,7 +265,11 @@ def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
             if service is None:
                 continue
             labels = service.get("metadata", {}).get("labels", {})
-            if labels.get("app.kubernetes.io/instance") != "ingress-nginx":
+            if (
+                labels.get("app.kubernetes.io/managed-by") != "Helm"
+                or labels.get("app.kubernetes.io/instance")
+                != "ingress-nginx"
+            ):
                 raise RuntimeError(
                     f"Refusing to replace unrecognized Service "
                     f"{LEGACY_INGRESS_NAMESPACE}/{name}"

@@ -3212,6 +3212,28 @@ class DaprWrapper:  # DaprWrapr 🫠
                 )
                 is None
             ):
+                output = execute_cmd(
+                    [
+                        self.os_artifacts.helm,
+                        "list",
+                        "--all-namespaces",
+                        "--filter",
+                        "^dapr$",
+                        "--output",
+                        "json",
+                    ],
+                    check_empty_result=False,
+                    error_string="Unable to inspect Dapr release",
+                    subprocess_log_level="debug",
+                )
+                releases = json.loads(output or "[]")
+                if any(
+                    release.get("namespace") == self.namespace
+                    for release in releases
+                ):
+                    raise RuntimeError(
+                        "Dapr release exists but its operator is missing"
+                    )
                 return []
             result = execute_cmd(
                 cmd, error_string="Unable to get Dapr version", subprocess_log_level="debug"

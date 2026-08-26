@@ -766,10 +766,31 @@ def test_dapr_version_is_empty_before_install() -> None:
     kubectl.get_or_none.return_value = None
     dapr = DaprWrapper(artifacts, kubectl)
 
-    with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd", return_value="[]"
+    ) as execute:
         assert dapr.version() == []
 
-    execute.assert_not_called()
+    assert "list" in execute.call_args.args[0]
+
+
+def test_dapr_version_rejects_missing_operator_for_existing_release() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.dapr = "dapr"
+    artifacts.helm = "helm"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.return_value = None
+    dapr = DaprWrapper(artifacts, kubectl)
+
+    with (
+        patch(
+            "vibe_core.cli.wrappers.execute_cmd",
+            return_value='[{"name":"dapr","namespace":"dapr-system"}]',
+        ),
+        pytest.raises(RuntimeError, match="operator is missing"),
+    ):
+        dapr.version()
 
 
 def test_dapr_crd_upgrade_fails_closed() -> None:

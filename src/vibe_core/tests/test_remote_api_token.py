@@ -241,6 +241,7 @@ def test_legacy_ingress_service_is_released_before_chart_cutover() -> None:
         {
             "metadata": {
                 "labels": {
+                    "app.kubernetes.io/managed-by": "Helm",
                     "app.kubernetes.io/instance": "ingress-nginx",
                 }
             }
