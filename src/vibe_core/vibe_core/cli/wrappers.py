@@ -1978,6 +1978,7 @@ class AzureCliWrapper:
                     self.resource_group,
                     "--kubernetes-version",
                     target,
+                    "--control-plane-only",
                     "--yes",
                 ],
                 check_empty_result=False,
