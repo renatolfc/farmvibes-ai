@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -402,7 +403,7 @@ class TerraformWrapper:
             spec = lease.get("spec", {})
             holder = spec.get("holderIdentity")
             if holder and holder != lock_id:
-                acquire_time = spec.get("acquireTime")
+                acquire_time = spec.get("renewTime") or spec.get("acquireTime")
                 duration = spec.get("leaseDurationSeconds")
                 stale = False
                 if acquire_time and duration:
@@ -468,9 +469,60 @@ class TerraformWrapper:
                 )
         finally:
             os.remove(manifest_path)
+        heartbeat_stop = threading.Event()
+        heartbeat_errors: List[Exception] = []
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(
+                self.LEGACY_LOCK_DURATION_SECONDS / 3
+            ):
+                patch = [
+                    {
+                        "op": "test",
+                        "path": "/spec/holderIdentity",
+                        "value": lock_id,
+                    },
+                    {
+                        "op": "add",
+                        "path": "/spec/renewTime",
+                        "value": datetime.now(timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                    },
+                ]
+                try:
+                    execute_cmd(
+                        command
+                        + [
+                            "patch",
+                            "lease",
+                            self.LEGACY_SERVICES_STATE_LOCK,
+                            "--type",
+                            "json",
+                            "--patch",
+                            json.dumps(patch),
+                        ],
+                        error_string=(
+                            "Failed to renew legacy services state lock"
+                        ),
+                        censor_output=True,
+                        subprocess_log_level="debug",
+                    )
+                except Exception as error:
+                    heartbeat_errors.append(error)
+                    return
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat,
+            name="farmvibes-state-lock",
+            daemon=True,
+        )
+        heartbeat_thread.start()
         try:
             yield
         finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join()
             patch = [
                 {
                     "op": "test",
@@ -502,6 +554,10 @@ class TerraformWrapper:
                 censor_output=True,
                 subprocess_log_level="debug",
             )
+            if heartbeat_errors:
+                raise RuntimeError(
+                    "Legacy services state lock renewal failed"
+                ) from heartbeat_errors[0]
 
     def _pull_legacy_services_state(
         self,
@@ -3098,8 +3154,17 @@ class DaprWrapper:  # DaprWrapr 🫠
             self.upgrade(version)
         return True
 
-    def prepare_for_terraform_reconciliation(self) -> None:
+    def prepare_for_terraform_reconciliation(self) -> bool:
         with self.kubectl.context(self.kubectl.cluster_name):
+            statefulset = self.kubectl.get_or_none(
+                "statefulset",
+                self.PLACEMENT_STATEFULSET,
+                namespace=self.namespace,
+            )
+            if statefulset is None or statefulset.get("spec", {}).get(
+                "replicas"
+            ) == 3:
+                return False
             self.kubectl.delete(
                 "statefulset",
                 self.PLACEMENT_STATEFULSET,
@@ -3113,3 +3178,4 @@ class DaprWrapper:  # DaprWrapr 🫠
                 timeout_s=600,
                 namespace=self.namespace,
             )
+        return True

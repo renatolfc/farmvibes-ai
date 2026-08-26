@@ -116,8 +116,28 @@ def test_ingress_cutover_runs_before_kubernetes_apply() -> None:
     terraform.get_output = Mock(return_value={})
 
     terraform.ensure_k8s_cluster(
-        *["value"] * 21,
-        False,
+        cluster_name="cluster",
+        tenant_id="tenant",
+        registry_path="registry",
+        registry_username="username",
+        registry_password="password",
+        resource_group="group",
+        current_user_name="user",
+        certificate_email="user@example.test",
+        kubernetes_config_context="context",
+        public_ip_address="ip",
+        public_ip_fqdn="fqdn",
+        public_ip_dns="dns",
+        keyvault_name="vault",
+        application_id="application",
+        storage_connection_key="storage-key",
+        storage_account_name="storage",
+        userfile_container_name="user-files",
+        monitor_instrumentation_key="monitor",
+        backend_storage_name="backend",
+        backend_container_name="container",
+        backend_storage_access_key="backend-key",
+        enable_telemetry=False,
         migrate_legacy_services=True,
         before_apply=lambda: events.append("ingress"),
     )
@@ -732,9 +752,10 @@ def test_dapr_crd_upgrade_fails_closed() -> None:
 def test_dapr_reconciliation_recreates_placement_statefulset() -> None:
     kubectl = Mock(cluster_name="cluster")
     kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.return_value = {"spec": {"replicas": 1}}
     dapr = DaprWrapper(Mock(), kubectl)
 
-    dapr.prepare_for_terraform_reconciliation()
+    assert dapr.prepare_for_terraform_reconciliation()
 
     kubectl.delete.assert_called_once_with(
         "statefulset",
@@ -749,6 +770,16 @@ def test_dapr_reconciliation_recreates_placement_statefulset() -> None:
         timeout_s=600,
         namespace="dapr-system",
     )
+
+
+def test_dapr_reconciliation_keeps_converged_placement() -> None:
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    kubectl.get_or_none.return_value = {"spec": {"replicas": 3}}
+    dapr = DaprWrapper(Mock(), kubectl)
+
+    assert not dapr.prepare_for_terraform_reconciliation()
+    kubectl.delete.assert_not_called()
 
 
 def test_dapr_upgrade_applies_crds_before_each_runtime() -> None:
