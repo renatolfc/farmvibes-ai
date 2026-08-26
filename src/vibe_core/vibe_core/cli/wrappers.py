@@ -3065,6 +3065,11 @@ class CertManagerWrapper:
                 "Refusing to modify cert-manager owned outside the supported "
                 f"namespaces: {', '.join(unexpected_namespaces)}"
             )
+        if len({release.get("namespace") for release in releases}) > 1:
+            raise RuntimeError(
+                "Refusing to modify cert-manager releases found in both "
+                "supported namespaces"
+            )
         return releases
 
     def _release(self, namespace: str) -> Optional[Dict[str, Any]]:

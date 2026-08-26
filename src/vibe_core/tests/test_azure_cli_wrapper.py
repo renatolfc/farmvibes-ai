@@ -1036,6 +1036,28 @@ def test_cert_manager_rejects_release_in_unmanaged_namespace() -> None:
     execute.assert_called_once()
 
 
+def test_cert_manager_rejects_releases_in_both_supported_namespaces() -> None:
+    artifacts = Mock(spec=OSArtifacts)
+    artifacts.helm = "helm"
+    kubectl = Mock(cluster_name="cluster")
+    kubectl.context.return_value = nullcontext()
+    cert_manager = CertManagerWrapper(artifacts, kubectl)
+
+    with patch(
+        "vibe_core.cli.wrappers.execute_cmd",
+        return_value=json.dumps(
+            [
+                {"name": "cert-manager", "namespace": "cert-manager"},
+                {"name": "cert-manager", "namespace": "kube-system"},
+            ]
+        ),
+    ) as execute:
+        with pytest.raises(RuntimeError, match="both supported namespaces"):
+            cert_manager.prepare_for_terraform_reconciliation()
+
+    execute.assert_called_once()
+
+
 def test_cert_manager_rejects_unmanaged_crd_ownership_before_changes() -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.kubectl = "kubectl"
