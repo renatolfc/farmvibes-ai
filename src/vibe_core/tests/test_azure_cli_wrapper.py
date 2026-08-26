@@ -868,6 +868,7 @@ def test_cert_manager_upgrade_path_uses_latest_patch_for_each_minor() -> None:
 def test_cert_manager_removes_legacy_namespace_release() -> None:
     artifacts = Mock(spec=OSArtifacts)
     artifacts.helm = "helm"
+    artifacts.kubectl = "kubectl"
     kubectl = Mock(cluster_name="cluster")
     kubectl.context.return_value = nullcontext()
     cert_manager = CertManagerWrapper(artifacts, kubectl)
@@ -882,12 +883,22 @@ def test_cert_manager_removes_legacy_namespace_release() -> None:
     with patch("vibe_core.cli.wrappers.execute_cmd") as execute:
         assert cert_manager.prepare_for_terraform_reconciliation()
 
-    assert execute.call_args.args[0] == [
+    assert execute.call_args_list[0].args[0] == [
         "helm",
         "uninstall",
         "cert-manager",
         "--namespace",
         "kube-system",
+    ]
+    assert execute.call_args_list[1].args[0] == [
+        artifacts.kubectl,
+        "annotate",
+        "customresourcedefinitions",
+        "--selector",
+        "app.kubernetes.io/instance=cert-manager",
+        "meta.helm.sh/release-name=cert-manager",
+        "meta.helm.sh/release-namespace=cert-manager",
+        "--overwrite",
     ]
 
 

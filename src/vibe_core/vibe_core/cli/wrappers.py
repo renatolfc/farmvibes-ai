@@ -3120,6 +3120,21 @@ class CertManagerWrapper:
                 error_string="Unable to remove legacy cert-manager release",
                 subprocess_log_level="debug",
             )
+            execute_cmd(
+                [
+                    self.os_artifacts.kubectl,
+                    "annotate",
+                    "customresourcedefinitions",
+                    "--selector",
+                    "app.kubernetes.io/instance=cert-manager",
+                    "meta.helm.sh/release-name=cert-manager",
+                    f"meta.helm.sh/release-namespace={self.NAMESPACE}",
+                    "--overwrite",
+                ],
+                check_empty_result=False,
+                error_string="Unable to transfer cert-manager CRD ownership",
+                subprocess_log_level="debug",
+            )
         return True
 
 
