@@ -24,6 +24,10 @@ resource "helm_release" "letsencrypt" {
     {
       name  = "nodeSelector.kubernetes\\.io/os"
       value = "linux"
+    },
+    {
+      name  = "clusterResourceNamespace"
+      value = "kube-system"
     }
   ]
 

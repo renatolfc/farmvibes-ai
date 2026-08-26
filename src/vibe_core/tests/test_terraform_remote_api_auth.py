@@ -121,6 +121,8 @@ def test_maintenance_infrastructure_versions_and_platforms():
     assert 'version    = "v1.21.1"' in cert_manager
     assert 'name = "cert-manager"' in cert_manager
     assert "namespace  = kubernetes_namespace.cert_manager" in cert_manager
+    assert 'name  = "clusterResourceNamespace"' in cert_manager
+    assert 'value = "kube-system"' in cert_manager
     assert "atomic     = true" in cert_manager
     assert "timeout    = 600" in cert_manager
     assert 'name  = "crds.enabled"' in cert_manager
