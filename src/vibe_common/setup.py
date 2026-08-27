@@ -18,6 +18,7 @@ setup(
         "aiohttp-retry~=2.8.3",
         "azure-keyvault>=4.1.0",
         "jsonschema~=4.6",
+        "pydantic>=1.10.17,<2",
         "requests~=2.32.0",
         "cloudevents~=1.2",
         "grpcio~=1.53.0",
