@@ -14,7 +14,7 @@ dapr-ext-grpc~=1.12.0
 dask[dataframe]==2024.4.1
 debugpy~=1.8.1
 einops==0.4.1
-fastapi~=0.97.0
+fastapi~=0.109.1
 fastapi-versioning~=0.10.0
 fiona~=1.8.0
 folium~=0.12.0
@@ -58,7 +58,7 @@ shapely>=1.7.1
 spyndex==0.4.0
 timezonefinder==6.2.0
 tqdm~=4.66.3
-typing-extensions~=4.7.1
+typing-extensions>=4.8,<5
 uvicorn~=0.14.0
 xarray~=2022.11.0
 xlrd~=2.0.1
