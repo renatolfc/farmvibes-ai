@@ -218,6 +218,12 @@ jobs:
         echo "Available storage:"
         df -h
         echo
+    - name: Run MCP integration test
+      run: |
+        python -m venv /tmp/farmvibes-mcp
+        /tmp/farmvibes-mcp/bin/pip install ./src/vibe_core "./src/farmvibes_mcp[test]"
+        /tmp/farmvibes-mcp/bin/pytest ./src/tests_mcp_local_cluster -v \
+          --junitxml=junit/mcp-test-results.xml
     - name: Run integration tests
       run: |
         pytest ./src/tests_local_cluster/  -v --junitxml=junit/test-results.xml
