@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 import pytest
 from mcp import Client, StdioServerParameters
+from mcp.types import TextContent
 
 RUN_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -143,4 +144,5 @@ async def test_real_stdio_server(farmvibes_server: dict[str, str]) -> None:
             },
         )
         assert invalid.is_error
+        assert isinstance(invalid.content[0], TextContent)
         assert "ISO 8601" in invalid.content[0].text

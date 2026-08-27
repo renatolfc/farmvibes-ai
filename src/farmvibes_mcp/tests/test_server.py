@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 from mcp import Client
+from mcp.types import TextContent
 
 from farmvibes_mcp import server
 from vibe_core.datamodel import RunStatus, TaskDescription
@@ -152,6 +153,7 @@ async def test_submit_run_reports_input_errors() -> None:
             )
 
     assert result.is_error
+    assert isinstance(result.content[0], TextContent)
     assert "start_time must be an ISO 8601 timestamp" in result.content[0].text
 
 

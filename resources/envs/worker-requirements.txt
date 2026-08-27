@@ -37,7 +37,7 @@ pandas~=2.2.1
 pebble~=4.6.3
 pillow~=10.2.0
 pint~=0.23
-planetary-computer~=0.4.5
+planetary-computer~=1.0.0
 protlearn==0.0.3
 pydantic>=2.9,<3
 pydap==3.2.2
