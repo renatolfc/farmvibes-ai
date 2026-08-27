@@ -4,6 +4,7 @@
 from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from uuid import UUID
 
 import pytest
 from mcp import Client
@@ -24,7 +25,7 @@ class FakeDetails:
 
 @dataclass
 class FakeRunDescription:
-    id: str
+    id: UUID
     name: str
     workflow: str
     parameters: dict[str, object]
@@ -50,7 +51,7 @@ async def test_tools_reuse_client_and_return_structured_results() -> None:
     )
     client.list_runs.return_value = [{"id": "run-1", "details.status": "done"}]
     client.describe_run.return_value = FakeRunDescription(
-        id="run-1",
+        id=UUID("00000000-0000-0000-0000-000000000001"),
         name="example",
         workflow="helloworld",
         parameters={"size": 1},
@@ -106,6 +107,10 @@ async def test_tools_reuse_client_and_return_structured_results() -> None:
             }
             run = await mcp_client.call_tool("get_run", {"run_id": "run-1"})
             assert "output" not in run.structured_content
+            assert (
+                run.structured_content["id"]
+                == "00000000-0000-0000-0000-000000000001"
+            )
             output = await mcp_client.call_tool(
                 "get_run_output", {"run_id": "run-1"}
             )

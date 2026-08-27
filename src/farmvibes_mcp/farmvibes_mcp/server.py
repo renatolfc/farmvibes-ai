@@ -5,7 +5,6 @@
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict
 from datetime import datetime
 from typing import Any, TypeVar
 
@@ -111,9 +110,9 @@ def list_runs(
 def get_run(run_id: str) -> dict[str, Any]:
     """Get run metadata and task details without its potentially large output."""
     run = _execute(lambda: _client().describe_run(run_id))
-    result = asdict(run)
+    result = _jsonable(run)
     result.pop("output", None)
-    return _jsonable(result)
+    return result
 
 
 @mcp.tool()
