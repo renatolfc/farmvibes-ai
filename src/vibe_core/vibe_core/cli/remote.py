@@ -22,7 +22,13 @@ from vibe_core.cli.helper import in_wsl, log_should_be_logged_in, verify_to_proc
 from vibe_core.cli.local import backup_redis_data, needs_service_migration, restore_redis_data
 from vibe_core.cli.logging import ColorFormatter, log
 from vibe_core.cli.osartifacts import OSArtifacts, secure_path
-from vibe_core.cli.wrappers import AzureCliWrapper, DaprWrapper, KubectlWrapper, TerraformWrapper
+from vibe_core.cli.wrappers import (
+    AzureCliWrapper,
+    CertManagerWrapper,
+    DaprWrapper,
+    KubectlWrapper,
+    TerraformWrapper,
+)
 from vibe_core.security import (
     API_AUTH_SECRET_KEY as REMOTE_API_AUTH_TOKEN_KEY,
 )
@@ -52,6 +58,11 @@ BACKEND_DEPLOYMENTS = (
     "terravibes-worker",
 )
 REMOTE_REDIS_MIGRATION_BACKUP_PREFIX = "remote-redis-migration"
+LEGACY_INGRESS_NAMESPACE = "ingress-basic"
+LEGACY_INGRESS_SERVICES = (
+    "ingress-nginx-nginx-ingress",
+    "ingress-nginx-controller",
+)
 
 
 def _initialize_kubectl(az: AzureCliWrapper) -> Optional[KubectlWrapper]:
@@ -244,6 +255,42 @@ def quiesce_remote_services(kubectl: KubectlWrapper) -> Dict[str, int]:
     return replicas
 
 
+def remove_legacy_ingress_service(kubectl: KubectlWrapper) -> bool:
+    with kubectl.context():
+        owned_services = []
+        for name in LEGACY_INGRESS_SERVICES:
+            service = kubectl.get_or_none(
+                "service", name, LEGACY_INGRESS_NAMESPACE
+            )
+            if service is None:
+                continue
+            labels = service.get("metadata", {}).get("labels", {})
+            if (
+                labels.get("app.kubernetes.io/managed-by") != "Helm"
+                or labels.get("app.kubernetes.io/instance")
+                != "ingress-nginx"
+            ):
+                raise RuntimeError(
+                    f"Refusing to replace unrecognized Service "
+                    f"{LEGACY_INGRESS_NAMESPACE}/{name}"
+                )
+            owned_services.append(name)
+        for name in owned_services:
+            kubectl.delete(
+                "service",
+                name,
+                namespace=LEGACY_INGRESS_NAMESPACE,
+                wait=False,
+            )
+            kubectl.wait_for_delete(
+                "service",
+                name,
+                timeout_s=600,
+                namespace=LEGACY_INGRESS_NAMESPACE,
+            )
+    return bool(owned_services)
+
+
 def status(os_artifacts: OSArtifacts, az: AzureCliWrapper, environment: str) -> bool:
     # Detect if we're running in WSL
     if in_wsl() and az.is_file_in_mount():
@@ -430,7 +477,7 @@ def setup_or_upgrade(
                 storage_access_key,
                 enable_telemetry,  # Required to create azure monitor and application insights
                 cleanup_state=True,
-                is_update=is_update,
+                after_init=az.ensure_kubernetes_version if is_update else None,
             )
             secure_path(Path(os_artifacts.config_file("kubeconfig")), 0o600)
 
@@ -438,12 +485,19 @@ def setup_or_upgrade(
             if not kubectl:
                 log("Couldn't initialize kubectl, not updating", level="error")
                 return False
+            cert_manager = CertManagerWrapper(kubectl.os_artifacts, kubectl)
+            if is_update and cert_manager.needs_upgrade():
+                cert_manager.upgrade_sequentially()
+            if is_update:
+                cert_manager.prepare_for_terraform_reconciliation()
             dapr = DaprWrapper(kubectl.os_artifacts, kubectl)
             if is_update and dapr.needs_upgrade():
-                log("Upgrading Dapr CRDs")
-                if not dapr.upgrade_crds():
-                    log("Unable to upgrade Dapr CRDs", level="error")
+                log("Upgrading Dapr one supported minor at a time")
+                if not dapr.upgrade_sequentially():
+                    log("Unable to upgrade Dapr", level="error")
                     return False
+            if is_update:
+                dapr.prepare_for_terraform_reconciliation()
 
             migration_backup: Optional[Path] = None
             previous_replicas: Optional[Dict[str, int]] = None
@@ -452,6 +506,10 @@ def setup_or_upgrade(
             def mark_migration_started() -> None:
                 nonlocal migration_started
                 migration_started = True
+
+            def prepare_ingress_upgrade() -> None:
+                if is_update:
+                    remove_legacy_ingress_service(kubectl)
 
             if is_update:
                 migration_backup = remote_redis_migration_backup(
@@ -521,6 +579,7 @@ def setup_or_upgrade(
                     cleanup_state=True,
                     migrate_legacy_services=is_update,
                     on_legacy_destroy=mark_migration_started,
+                    before_apply=prepare_ingress_upgrade,
                 )
             except Exception:
                 if previous_replicas is not None and not migration_started:
@@ -551,7 +610,11 @@ def setup_or_upgrade(
                 k8s_results["otel_service_name"]["value"] if enable_telemetry else "",
                 worker_replicas,
                 log_level,
+                storage_name,
+                container_name,
+                storage_access_key,
                 cleanup_state=True,
+                migrate_state=is_update,
             )
 
             with kubectl.context(kubectl.cluster_name):
