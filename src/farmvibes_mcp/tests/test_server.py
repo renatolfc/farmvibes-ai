@@ -151,10 +151,23 @@ async def test_submit_run_reports_input_errors() -> None:
                     "end_time": "2024-01-02T00:00:00+00:00",
                 },
             )
+            malformed = await client.call_tool(
+                "submit_run",
+                {
+                    "workflow_name": "helloworld",
+                    "run_name": "bad-geometry",
+                    "geometry": {},
+                    "start_time": "2024-01-01T00:00:00+00:00",
+                    "end_time": "2024-01-02T00:00:00+00:00",
+                },
+            )
 
     assert result.is_error
     assert isinstance(result.content[0], TextContent)
     assert "start_time must be an ISO 8601 timestamp" in result.content[0].text
+    assert malformed.is_error
+    assert isinstance(malformed.content[0], TextContent)
+    assert "geometry must be a nonempty valid GeoJSON geometry" in malformed.content[0].text
 
 
 def test_client_uses_existing_default_discovery() -> None:

@@ -11,6 +11,7 @@ from typing import Any, TypeVar
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from requests import RequestException
+from shapely.errors import ShapelyError
 from shapely.geometry import shape
 
 from vibe_core.client import FarmvibesAiClient, get_default_vibe_client
@@ -70,7 +71,10 @@ def submit_run(
     """Submit a workflow using GeoJSON geometry and timezone-aware ISO 8601 timestamps."""
 
     def submit() -> dict[str, Any]:
-        parsed_geometry = shape(geometry)
+        try:
+            parsed_geometry = shape(geometry)
+        except (AttributeError, KeyError, TypeError, ValueError, ShapelyError) as error:
+            raise ValueError("geometry must be a nonempty valid GeoJSON geometry") from error
         if parsed_geometry.is_empty or not parsed_geometry.is_valid:
             raise ValueError("geometry must be a nonempty valid GeoJSON geometry")
         start = _timestamp(start_time, "start_time")
