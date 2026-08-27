@@ -7,7 +7,6 @@ import sys
 import traceback
 from dataclasses import asdict
 from datetime import datetime
-from enum import StrEnum
 from random import getrandbits
 from typing import (
     Any,
@@ -36,6 +35,7 @@ from dapr.conf import settings
 from pydantic.v1 import BaseModel as PyBaseModel
 from pydantic.v1 import Field, ValidationError, validator
 from pystac.item import Item
+from strenum import StrEnum
 
 import vibe_common.telemetry as telemetry
 from vibe_core.data.core_types import OpIOType

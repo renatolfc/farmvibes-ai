@@ -12,6 +12,6 @@ setup(
     license="Proprietary",
     keywords="terravibes geospatial",
     packages=find_packages(exclude=["tests*"]),
-    python_requires=">=3.11",
+    python_requires="~=3.8",
     install_requires=["numpy", "geopandas", "rasterio~=1.2"],
 )

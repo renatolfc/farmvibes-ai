@@ -12,7 +12,6 @@ setup(
     license="Proprietary",
     keywords="terravibes geospatial",
     packages=find_packages(exclude=["tests*"]),
-    python_requires=">=3.11",
     install_requires=[
         "aiorwlock~=1.3.0",
         "azure-cosmos~=4.5.0",

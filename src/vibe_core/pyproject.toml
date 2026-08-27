@@ -24,7 +24,7 @@ authors = [
 ]
 description = "FarmVibes.AI Geospatial Platform Package - vibe core package."
 license = {text = "MIT"}
-requires-python = ">=3.11"
+requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -41,11 +41,13 @@ keywords = [
 dependencies = [
     "certifi~=2023.7.22",
     "jsonschema~=4.6",
-    "pydantic~=2.12.0",
+    "pydantic>=2.9,<3",
+    "strenum~=0.4.7",
     "shapely>=1.7.1",
     "requests~=2.32.0",
     "pystac~=1.6.0",
     "hydra-zen~=0.10",
+    "importlib-resources>=5.2; python_version<'3.9'",
     "rich~=13.7.1",
     "msal==1.22.0",
 ]

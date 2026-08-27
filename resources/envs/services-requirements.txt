@@ -9,5 +9,6 @@ pyyaml~=6.0.1
 debugpy~=1.8.1
 shapely>=1.7.1
 fastapi~=0.109.1
-pydantic~=2.12.0
+pydantic>=2.9,<3
+strenum~=0.4.7
 cryptography>=42.0.0

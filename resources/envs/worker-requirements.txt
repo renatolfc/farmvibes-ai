@@ -39,7 +39,7 @@ pillow~=10.2.0
 pint~=0.23
 planetary-computer~=0.4.5
 protlearn==0.0.3
-pydantic~=2.12.0
+pydantic>=2.9,<3
 pydap==3.2.2
 pyngrok~=7.1.2
 pysmb==1.2.9.1
@@ -59,6 +59,7 @@ spyndex==0.4.0
 timezonefinder==6.2.0
 tqdm~=4.66.3
 typing-extensions>=4.8,<5
+strenum~=0.4.7
 uvicorn~=0.14.0
 xarray~=2022.11.0
 xlrd~=2.0.1

@@ -18,7 +18,7 @@ setup(
         "pytest-cov",
         "onnx~=1.16.0",
     ],
-    python_requires=">=3.11",
+    python_requires="~=3.8",
     entry_points={
         "console_scripts": [
             "vibe-local-run = vibe_dev.localrunner:main",

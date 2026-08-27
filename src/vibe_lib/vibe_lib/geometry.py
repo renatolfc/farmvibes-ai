@@ -1,7 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from enum import StrEnum
 from functools import reduce
 from operator import add
 from typing import Any, Dict, List, cast
@@ -12,6 +11,8 @@ from geopandas import GeoDataFrame
 from shapely import geometry as shpg
 from shapely.geometry import Point, Polygon
 from shapely.geometry.base import BaseGeometry
+from strenum import StrEnum
+
 FEATURE = "feature"
 FEATURE_COLLECTION = "featurecollection"
 

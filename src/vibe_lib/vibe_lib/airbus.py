@@ -5,13 +5,13 @@ import json
 import os
 import time
 from datetime import datetime
-from enum import StrEnum
 from typing import Any, Dict, List, Sequence, Tuple
 from zipfile import ZipFile
 
 import requests
 from shapely import geometry as shpg
 from shapely.geometry.base import BaseGeometry
+from strenum import StrEnum
 
 from vibe_core.file_downloader import download_file
 

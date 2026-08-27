@@ -9,10 +9,10 @@ import zlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, field
 from datetime import datetime
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Dict, Final, List, Optional, Tuple, Union
 from uuid import UUID
 
+from strenum import StrEnum
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:

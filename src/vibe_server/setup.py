@@ -12,7 +12,7 @@ setup(
     license="Proprietary",
     keywords="terravibes geospatial",
     packages=find_packages(exclude=["tests*"]),
-    python_requires=">=3.11",
+    python_requires="~=3.8",
     install_requires=[
         "httpx~=0.24.1",
         "grpcio~=1.53.0",

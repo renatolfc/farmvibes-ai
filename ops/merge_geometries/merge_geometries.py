@@ -2,11 +2,11 @@
 # Licensed under the MIT License.
 
 import hashlib
-from enum import StrEnum
 from typing import Dict, List, TypeVar
 
 from shapely import geometry as shpg
 from shapely import ops as shpo
+from strenum import StrEnum
 
 from vibe_core.data import DataVibe
 

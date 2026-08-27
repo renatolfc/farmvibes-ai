@@ -8,7 +8,6 @@ import os
 from argparse import ArgumentParser, Namespace
 from dataclasses import asdict
 from datetime import datetime
-from enum import StrEnum
 from typing import (
     Any,
     Dict,
@@ -37,6 +36,7 @@ from hydra_zen import instantiate
 from opentelemetry import trace
 from pydantic import v1 as pydantic
 from starlette.middleware.cors import CORSMiddleware
+from strenum import StrEnum
 
 from vibe_common.constants import (
     ALLOWED_ORIGINS,

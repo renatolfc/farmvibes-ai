@@ -15,10 +15,14 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from importlib.resources import files
 from typing import Dict, List, NamedTuple, Optional
 
 import requests
+
+try:
+    from importlib.resources import files
+except ImportError:
+    from importlib_resources import files
 
 from vibe_core.security import get_farmvibes_config_dir
 
