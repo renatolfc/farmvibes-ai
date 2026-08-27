@@ -22,6 +22,7 @@ from vibe_common.messaging import (
     MessageType,
     OpStatusType,
     WorkMessage,
+    WorkMessageBuilder,
     build_work_message,
 )
 from vibe_common.schemas import CacheInfo, EntryPointDict, OperationSpec
@@ -33,7 +34,6 @@ from vibe_dev.testing.fake_workflows_fixtures import get_fake_workflow_path
 from vibe_server.workflow.runner.remote_runner import (
     MessageRouter,
     RemoteWorkflowRunner,
-    WorkMessageBuilder,
 )
 from vibe_server.workflow.runner.task_io_handler import WorkflowIOHandler
 from vibe_server.workflow.workflow import Workflow

@@ -9,12 +9,16 @@ import zlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, field
 from datetime import datetime
-from enum import StrEnum, auto
-from typing import Any, Dict, Final, List, Optional, Tuple, Union
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Dict, Final, List, Optional, Tuple, Union
 from uuid import UUID
 
-from pydantic.v1.dataclasses import dataclass
 from typing_extensions import TypedDict
+
+if TYPE_CHECKING:
+    from dataclasses import dataclass
+else:
+    from pydantic.v1.dataclasses import dataclass
 
 from .data import BaseVibeDict
 from .data.core_types import OpIOType
@@ -127,21 +131,21 @@ class RunConfigInput(RunBase):
 class RunStatus(StrEnum):
     """Enum that represents the status of a run."""
 
-    pending = auto()
+    pending = "pending"
     """The run is pending"""
-    queued = auto()
+    queued = "queued"
     """The run is queued."""
-    running = auto()
+    running = "running"
     """The run is running."""
-    failed = auto()
+    failed = "failed"
     """The run has failed."""
-    done = auto()
+    done = "done"
     """The run is done."""
-    cancelled = auto()
+    cancelled = "cancelled"
     """The run is cancelled."""
-    deleting = auto()
+    deleting = "deleting"
     """The run is being deleted."""
-    deleted = auto()
+    deleted = "deleted"
     """The run has been deleted."""
 
     @staticmethod

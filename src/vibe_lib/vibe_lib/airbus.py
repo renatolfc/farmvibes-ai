@@ -5,7 +5,7 @@ import json
 import os
 import time
 from datetime import datetime
-from enum import StrEnum, auto
+from enum import StrEnum
 from typing import Any, Dict, List, Sequence, Tuple
 from zipfile import ZipFile
 
@@ -26,19 +26,19 @@ RADIOMETRIC_PROCESSING = "DISPLAY"
 
 
 class Constellation(StrEnum):
-    SPOT = auto()
-    PHR = auto()
-    PNEO = auto()
+    SPOT = "SPOT"
+    PHR = "PHR"
+    PNEO = "PNEO"
 
 
 class GeometryRelation(StrEnum):
-    intersects = auto()
-    contains = auto()
+    intersects = "intersects"
+    contains = "contains"
 
 
 class OrderStatus(StrEnum):
-    ordered = auto()
-    delivered = auto()
+    ordered = "ordered"
+    delivered = "delivered"
 
 
 class AirBusAPI:

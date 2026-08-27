@@ -7,7 +7,7 @@ import sys
 import traceback
 from dataclasses import asdict
 from datetime import datetime
-from enum import StrEnum, auto
+from enum import StrEnum
 from random import getrandbits
 from typing import (
     Any,
@@ -74,20 +74,20 @@ ValidVersion = Literal["1.0"]
 
 
 class OpStatusType(StrEnum):
-    done = auto()
-    failed = auto()
+    done = "done"
+    failed = "failed"
 
 
 class MessageType(StrEnum):
-    ack = auto()
-    cache_info_execute_request = auto()
-    error = auto()
-    execute_request = auto()
-    execute_reply = auto()
-    evicted_reply = auto()
-    workflow_execution_request = auto()
-    workflow_cancellation_request = auto()
-    workflow_deletion_request = auto()
+    ack = "ack"
+    cache_info_execute_request = "cache_info_execute_request"
+    error = "error"
+    execute_request = "execute_request"
+    execute_reply = "execute_reply"
+    evicted_reply = "evicted_reply"
+    workflow_execution_request = "workflow_execution_request"
+    workflow_cancellation_request = "workflow_cancellation_request"
+    workflow_deletion_request = "workflow_deletion_request"
 
 
 class BaseModel(PyBaseModel):

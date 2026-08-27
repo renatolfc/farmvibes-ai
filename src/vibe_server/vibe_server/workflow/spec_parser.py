@@ -5,7 +5,7 @@ import os
 import re
 from copy import deepcopy
 from dataclasses import dataclass
-from enum import StrEnum, auto
+from enum import StrEnum
 from re import Pattern
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
 
@@ -56,8 +56,8 @@ SpecNodeType = Union[OperationSpec, "WorkflowSpec"]
 
 
 class TaskType(StrEnum):
-    op = auto()
-    workflow = auto()
+    op = "op"
+    workflow = "workflow"
 
 
 @dataclass
@@ -228,7 +228,7 @@ class WorkflowParser:
 
         return WorkflowSpecNode(
             task=task,
-            type=type,
+            type=TaskType(type),
             parameters=cast(Dict[str, Any], nodespec.get("parameters", {})),
             op_dir=cast(str, nodespec.get("op_dir", task)),
             parent=workflow_name,
