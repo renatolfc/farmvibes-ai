@@ -16,8 +16,6 @@ setup(
     install_requires=[
         "numpy",
         "geopandas",
-        "planetary-computer~=1.0.0",
-        "pystac-client~=0.3.2",
         "rasterio~=1.2",
     ],
 )

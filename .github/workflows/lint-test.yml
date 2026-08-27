@@ -95,6 +95,7 @@ jobs:
           ln -sf $(pwd)/workflows /app/workflows
       - name: Install packages
         run: |
+          pip install "pydantic>=1.10.17,<2"
           pip install ./src/vibe_core
           pip install ./src/vibe_common
           pip install ./src/vibe_agent

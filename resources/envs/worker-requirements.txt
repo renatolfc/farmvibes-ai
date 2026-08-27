@@ -14,7 +14,7 @@ dapr-ext-grpc~=1.12.0
 dask[dataframe]==2024.4.1
 debugpy~=1.8.1
 einops==0.4.1
-fastapi~=0.109.1
+fastapi~=0.97.0
 fastapi-versioning~=0.10.0
 fiona~=1.8.0
 folium~=0.12.0
@@ -37,9 +37,9 @@ pandas~=2.2.1
 pebble~=4.6.3
 pillow~=10.2.0
 pint~=0.23
-planetary-computer~=1.0.0
+planetary-computer~=0.4.5
 protlearn==0.0.3
-pydantic>=2.9,<3
+pydantic>=1.10.17,<2
 pydap==3.2.2
 pyngrok~=7.1.2
 pysmb==1.2.9.1
@@ -58,7 +58,7 @@ shapely>=1.7.1
 spyndex==0.4.0
 timezonefinder==6.2.0
 tqdm~=4.66.3
-typing-extensions>=4.8,<5
+typing-extensions~=4.7.1
 strenum~=0.4.7
 uvicorn~=0.14.0
 xarray~=2022.11.0
