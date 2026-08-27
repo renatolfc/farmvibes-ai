@@ -12,10 +12,9 @@ setup(
     license="Proprietary",
     keywords="terravibes geospatial",
     packages=find_packages(exclude=["tests*"]),
-    python_requires="~=3.8",
+    python_requires=">=3.11",
     install_requires=[
         "httpx~=0.24.1",
-        "fastapi_utils~=0.2.1",
         "grpcio~=1.53.0",
         "dapr==1.13.0",
         "dapr-ext-grpc~=1.12.0",

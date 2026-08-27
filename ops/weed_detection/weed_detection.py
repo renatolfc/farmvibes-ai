@@ -3,7 +3,7 @@
 
 import os
 from dataclasses import dataclass
-from enum import auto
+from enum import StrEnum, auto
 from tempfile import TemporaryDirectory
 from typing import Any, Dict, List, Tuple, Union
 
@@ -17,7 +17,6 @@ from rasterio.mask import mask
 from rasterio.transform import Affine
 from shapely import geometry as shpg
 from sklearn.mixture import GaussianMixture
-from strenum import StrEnum
 
 from vibe_core.data import DataVibe
 from vibe_core.data.core_types import AssetVibe, gen_guid

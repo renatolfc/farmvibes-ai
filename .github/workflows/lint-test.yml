@@ -23,15 +23,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python 3.11
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     - name: Install dependencies
       run: |
-        pip install wheel setuptools
+        pip install build wheel setuptools
     - name: Build packages
       run: |
-        for pkg in vibe_core vibe_common vibe_agent vibe_server vibe_dev; do cd src/$pkg && python setup.py bdist_wheel --dist-dir ../../dist; cd ../../; done
+        for pkg in vibe_core vibe_common vibe_agent vibe_server vibe_dev; do python -m build --wheel --outdir dist src/$pkg; done
     - name: Save packages
       uses: actions/upload-artifact@v4
       with:
@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.11
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Retrieve packages
@@ -62,6 +62,7 @@ jobs:
         run: |
           pip install dist/vibe_core-0.0.1-py3-none-any.whl dist/vibe_common-0.0.1-py3-none-any.whl
           pip install "dist/${{ matrix.package-to-test }}-0.0.1-py3-none-any.whl[test]"
+          pip check
       - name: Lint with ruff
         run: |
           ruff check ./src/${{ matrix.package-to-test }} --config ./.ruff.toml
@@ -116,7 +117,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python 3.11
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     - name: Install ruff
@@ -167,7 +168,7 @@ jobs:
       with:
         lfs: true
     - name: Set up Python 3.11
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     - name: Install packages

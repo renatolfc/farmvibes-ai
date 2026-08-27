@@ -251,7 +251,7 @@ automates the process of setting up the necessary infrastructure in Azure
 Before running the script, you need to install the `vibe_core` package which
 provides the `farmvibes-ai` command. Here's how to do it:
 
-1. Make sure you have Python 3.8 or higher installed, with the `pip` command
+1. Make sure you have Python 3.11 or higher installed, with the `pip` command
 available. See the [Python installation guide](https://www.python.org/downloads/) and
 the [pip installation guide](https://pip.pypa.io/en/stable/installing/) for
 instructions on how to install Python and pip.

@@ -16,7 +16,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from datetime import datetime
-from enum import auto
+from enum import StrEnum, auto
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union, cast, overload
 from urllib.parse import urljoin
 
@@ -28,7 +28,6 @@ from dateutil.tz.tz import tzfile
 from requests.exceptions import HTTPError
 from shapely import geometry as shpg
 from shapely.geometry.base import BaseGeometry
-from strenum import StrEnum
 
 from vibe_core.data import BaseVibeDict, StacConverter
 from vibe_core.data.core_types import BaseVibe

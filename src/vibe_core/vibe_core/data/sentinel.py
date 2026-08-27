@@ -6,11 +6,10 @@
 import mimetypes
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import auto
+from enum import StrEnum, auto
 from typing import Any, Dict, List, Union
 
 from dateutil.parser import parse as parse_date
-from strenum import StrEnum
 
 from . import AssetVibe, DataVibe
 from .core_types import TimeRange, gen_guid

@@ -27,8 +27,8 @@ from typing import (
     get_origin,
 )
 
-from pydantic.dataclasses import dataclass as pydataclass
-from pydantic.main import BaseModel, ModelMetaclass
+from pydantic.v1.dataclasses import dataclass as pydataclass
+from pydantic.v1.main import BaseModel, ModelMetaclass
 from shapely import geometry as shpg
 from shapely import wkt
 from shapely.geometry.base import BaseGeometry

@@ -33,7 +33,7 @@ In order to run FarmVibes.AI cluster, you need the following:
   * [Curl](https://curl.se/). FarmVibes.AI installer requires curl to install
     additional software for FarmVibes.AI cluster management.
 
-  * [Python 3.8+](https://www.python.org/downloads/). FarmVibes.AI provides
+  * [Python 3.11+](https://www.python.org/downloads/). FarmVibes.AI provides
     a python client to simplify the consumption of results and parameters
     providing process.
 

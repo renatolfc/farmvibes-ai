@@ -9,12 +9,11 @@ import zlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, field
 from datetime import datetime
-from enum import auto
+from enum import StrEnum, auto
 from typing import Any, Dict, Final, List, Optional, Tuple, Union
 from uuid import UUID
 
-from pydantic.dataclasses import dataclass
-from strenum import StrEnum
+from pydantic.v1.dataclasses import dataclass
 from typing_extensions import TypedDict
 
 from .data import BaseVibeDict

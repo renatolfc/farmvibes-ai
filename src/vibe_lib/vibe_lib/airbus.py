@@ -5,12 +5,11 @@ import json
 import os
 import time
 from datetime import datetime
-from enum import auto
+from enum import StrEnum, auto
 from typing import Any, Dict, List, Sequence, Tuple
 from zipfile import ZipFile
 
 import requests
-from fastapi_utils.enums import StrEnum
 from shapely import geometry as shpg
 from shapely.geometry.base import BaseGeometry
 

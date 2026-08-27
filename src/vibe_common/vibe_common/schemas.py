@@ -9,7 +9,7 @@ from itertools import chain
 from typing import Any, ClassVar, Dict, List, Optional, Union, cast
 
 import yaml
-from pydantic.dataclasses import dataclass
+from pydantic.v1.dataclasses import dataclass
 from pystac.item import Item
 from typing_extensions import TypedDict  # Required to avoid pydantic error
 

@@ -9,6 +9,7 @@ setup(
     author="Microsoft",
     author_email="terravibes@microsoft.com",
     packages=find_packages(),
+    python_requires=">=3.11",
     description="Shared notebook library for FarmVibes.AI notebooks.",
     install_requires=[
         "numpy",

@@ -12,7 +12,7 @@ setup(
     license="Proprietary",
     keywords="terravibes geospatial",
     packages=find_packages(exclude=["tests*"]),
-    python_requires="~=3.8",
+    python_requires=">=3.11",
     install_requires=[
         "aiohttp~=3.9.0",
         "aiohttp-retry~=2.8.3",
@@ -22,7 +22,6 @@ setup(
         "cloudevents~=1.2",
         "grpcio~=1.53.0",
         "dapr~=1.13.0",
-        "fastapi_utils~=0.2.1",
         "pyyaml~=6.0.1",
         "debugpy",
         "azure-identity~=1.14.0",

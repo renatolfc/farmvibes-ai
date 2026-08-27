@@ -8,7 +8,7 @@ import os
 from argparse import ArgumentParser, Namespace
 from dataclasses import asdict
 from datetime import datetime
-from enum import auto
+from enum import StrEnum, auto
 from typing import (
     Any,
     Dict,
@@ -24,7 +24,6 @@ from uuid import UUID, uuid4
 
 import debugpy
 import psutil
-import pydantic
 import requests
 import uvicorn
 import yaml
@@ -36,8 +35,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_versioning import VersionedFastAPI, version
 from hydra_zen import instantiate
 from opentelemetry import trace
+from pydantic import v1 as pydantic
 from starlette.middleware.cors import CORSMiddleware
-from strenum import StrEnum
 
 from vibe_common.constants import (
     ALLOWED_ORIGINS,

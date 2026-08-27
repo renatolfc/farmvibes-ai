@@ -16,7 +16,6 @@ debugpy~=1.8.1
 einops==0.4.1
 fastapi~=0.97.0
 fastapi-versioning~=0.10.0
-fastapi_utils~=0.2.1
 fiona~=1.8.0
 folium~=0.12.0
 fonttools~=4.43.0
@@ -40,7 +39,7 @@ pillow~=10.2.0
 pint~=0.23
 planetary-computer~=0.4.5
 protlearn==0.0.3
-pydantic~=1.8.2
+pydantic~=2.12.0
 pydap==3.2.2
 pyngrok~=7.1.2
 pysmb==1.2.9.1
@@ -57,7 +56,6 @@ scikit-image~=0.22.0
 scikit-learn~=1.1.0
 shapely>=1.7.1
 spyndex==0.4.0
-strenum~=0.4.7
 timezonefinder==6.2.0
 tqdm~=4.66.3
 typing-extensions~=4.7.1

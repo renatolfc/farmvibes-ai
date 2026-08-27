@@ -7,7 +7,7 @@ import sys
 import traceback
 from dataclasses import asdict
 from datetime import datetime
-from enum import auto
+from enum import StrEnum, auto
 from random import getrandbits
 from typing import (
     Any,
@@ -33,9 +33,8 @@ import requests
 from cloudevents.sdk.event import v1
 from dapr.clients.grpc._response import TopicEventResponse
 from dapr.conf import settings
-from fastapi_utils.enums import StrEnum
-from pydantic import BaseModel as PyBaseModel
-from pydantic import Field, ValidationError, validator
+from pydantic.v1 import BaseModel as PyBaseModel
+from pydantic.v1 import Field, ValidationError, validator
 from pystac.item import Item
 
 import vibe_common.telemetry as telemetry

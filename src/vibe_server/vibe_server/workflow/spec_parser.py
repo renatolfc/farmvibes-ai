@@ -5,12 +5,11 @@ import os
 import re
 from copy import deepcopy
 from dataclasses import dataclass
-from enum import auto
+from enum import StrEnum, auto
 from re import Pattern
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
 
 import yaml
-from fastapi_utils.enums import StrEnum
 
 from vibe_common.constants import DEFAULT_OPS_DIR
 from vibe_common.schemas import OperationParser, OperationSpec, update_parameters

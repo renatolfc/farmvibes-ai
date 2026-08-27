@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Tuple, cast
 from unittest.mock import AsyncMock, patch
 
-import pydantic
 import pytest
+from pydantic import v1 as pydantic
 from shapely.geometry import Polygon, mapping
 
 from vibe_common.input_handlers import gen_stac_item_from_bounds
