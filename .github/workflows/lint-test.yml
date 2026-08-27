@@ -31,7 +31,7 @@ jobs:
         pip install build wheel setuptools
     - name: Build packages
       run: |
-        for pkg in vibe_core vibe_common vibe_agent vibe_server vibe_dev; do python -m build --wheel --outdir dist src/$pkg; done
+        for pkg in vibe_core vibe_common vibe_agent vibe_server vibe_dev farmvibes_mcp; do python -m build --wheel --outdir dist src/$pkg; done
     - name: Save packages
       uses: actions/upload-artifact@v4
       with:
@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        package-to-test: [vibe_core, vibe_common, vibe_server, vibe_agent]
+        package-to-test: [vibe_core, vibe_common, vibe_server, vibe_agent, farmvibes_mcp]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.11
@@ -60,7 +60,10 @@ jobs:
           pip install pyright ruff==0.12.12
       - name: Install package
         run: |
-          pip install dist/vibe_core-0.0.1-py3-none-any.whl dist/vibe_common-0.0.1-py3-none-any.whl
+          pip install dist/vibe_core-0.0.1-py3-none-any.whl
+          if [ "${{ matrix.package-to-test }}" != "farmvibes_mcp" ]; then
+            pip install dist/vibe_common-0.0.1-py3-none-any.whl
+          fi
           pip install "dist/${{ matrix.package-to-test }}-0.0.1-py3-none-any.whl[test]"
           pip check
       - name: Lint with ruff
