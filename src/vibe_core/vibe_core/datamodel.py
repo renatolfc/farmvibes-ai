@@ -9,6 +9,7 @@ import zlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, field
 from datetime import datetime
+from enum import auto
 from typing import TYPE_CHECKING, Any, Dict, Final, List, Optional, Tuple, Union
 from uuid import UUID
 
@@ -131,21 +132,21 @@ class RunConfigInput(RunBase):
 class RunStatus(StrEnum):
     """Enum that represents the status of a run."""
 
-    pending = "pending"
+    pending = auto()
     """The run is pending"""
-    queued = "queued"
+    queued = auto()
     """The run is queued."""
-    running = "running"
+    running = auto()
     """The run is running."""
-    failed = "failed"
+    failed = auto()
     """The run has failed."""
-    done = "done"
+    done = auto()
     """The run is done."""
-    cancelled = "cancelled"
+    cancelled = auto()
     """The run is cancelled."""
-    deleting = "deleting"
+    deleting = auto()
     """The run is being deleted."""
-    deleted = "deleted"
+    deleted = auto()
     """The run has been deleted."""
 
     @staticmethod

@@ -8,6 +8,7 @@ import os
 from argparse import ArgumentParser, Namespace
 from dataclasses import asdict
 from datetime import datetime
+from enum import auto
 from typing import (
     Any,
     Dict,
@@ -151,8 +152,8 @@ def require_api_token(
 
 
 class WorkflowReturnFormat(StrEnum):
-    description = "description"
-    yaml = "yaml"
+    description = auto()
+    yaml = auto()
 
 
 class TerravibesProvider:

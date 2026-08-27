@@ -3,6 +3,7 @@
 
 import os
 from dataclasses import dataclass
+from enum import auto
 from tempfile import TemporaryDirectory
 from typing import Any, Dict, List, Tuple, Union
 
@@ -25,9 +26,9 @@ from vibe_lib.archive import create_flat_archive
 
 
 class SimplifyBy(StrEnum):
-    simplify = "simplify"
-    convex = "convex"
-    none = "none"
+    simplify = auto()
+    convex = auto()
+    none = auto()
 
 
 @dataclass

@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import hashlib
+from enum import auto
 from typing import Dict, List, TypeVar
 
 from shapely import geometry as shpg
@@ -14,8 +15,8 @@ T = TypeVar("T", bound=DataVibe)
 
 
 class MergeMethod(StrEnum):
-    union = "union"
-    intersection = "intersection"
+    union = auto()
+    intersection = auto()
 
 
 def callback_builder(method: str):

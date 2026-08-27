@@ -16,6 +16,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from datetime import datetime
+from enum import auto
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union, cast, overload
 from urllib.parse import urljoin
 
@@ -99,8 +100,8 @@ InputData = Union[Dict[str, Union[T, List[T]]], List[T], T]
 class ClusterType(StrEnum):
     """An enumeration of cluster types."""
 
-    remote = "remote"
-    local = "local"
+    remote = auto()
+    local = auto()
 
     def client(self):
         """Create a client based on the cluster type.

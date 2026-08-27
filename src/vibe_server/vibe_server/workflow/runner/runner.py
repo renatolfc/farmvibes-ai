@@ -6,6 +6,7 @@ import gc
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from enum import auto
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Protocol, Set, Tuple, cast
 from uuid import UUID, uuid4
 
@@ -33,16 +34,16 @@ async def NoOpStateChange(change: "WorkflowChange", **kwargs: Any) -> None:
 
 
 class WorkflowChange(StrEnum):
-    WORKFLOW_STARTED = cast("WorkflowChange", "WORKFLOW_STARTED")
-    WORKFLOW_FINISHED = cast("WorkflowChange", "WORKFLOW_FINISHED")
-    WORKFLOW_FAILED = cast("WorkflowChange", "WORKFLOW_FAILED")
-    WORKFLOW_CANCELLED = cast("WorkflowChange", "WORKFLOW_CANCELLED")
-    TASK_STARTED = cast("WorkflowChange", "TASK_STARTED")
-    SUBTASK_QUEUED = cast("WorkflowChange", "SUBTASK_QUEUED")
-    SUBTASK_RUNNING = cast("WorkflowChange", "SUBTASK_RUNNING")
-    SUBTASK_FINISHED = cast("WorkflowChange", "SUBTASK_FINISHED")
-    SUBTASK_FAILED = cast("WorkflowChange", "SUBTASK_FAILED")
-    SUBTASK_PENDING = cast("WorkflowChange", "SUBTASK_PENDING")
+    WORKFLOW_STARTED = cast("WorkflowChange", auto())
+    WORKFLOW_FINISHED = cast("WorkflowChange", auto())
+    WORKFLOW_FAILED = cast("WorkflowChange", auto())
+    WORKFLOW_CANCELLED = cast("WorkflowChange", auto())
+    TASK_STARTED = cast("WorkflowChange", auto())
+    SUBTASK_QUEUED = cast("WorkflowChange", auto())
+    SUBTASK_RUNNING = cast("WorkflowChange", auto())
+    SUBTASK_FINISHED = cast("WorkflowChange", auto())
+    SUBTASK_FAILED = cast("WorkflowChange", auto())
+    SUBTASK_PENDING = cast("WorkflowChange", auto())
 
 
 class OpParallelism:

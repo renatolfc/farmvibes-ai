@@ -6,6 +6,7 @@
 import mimetypes
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import auto
 from typing import Any, Dict, List, Union
 
 from dateutil.parser import parse as parse_date
@@ -19,9 +20,9 @@ from .rasters import CategoricalRaster, CloudRaster, Raster, RasterSequence
 class S2ProcessingLevel(StrEnum):
     """Enum for Sentinel 2 processing levels."""
 
-    L1C = "L1C"
+    L1C = auto()
     """Level 1C processing level."""
-    L2A = "L2A"
+    L2A = auto()
     """Level 2A processing level."""
 
 

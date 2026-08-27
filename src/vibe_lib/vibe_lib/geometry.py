@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+from enum import auto
 from functools import reduce
 from operator import add
 from typing import Any, Dict, List, cast
@@ -18,9 +19,9 @@ FEATURE_COLLECTION = "featurecollection"
 
 
 class SimplifyBy(StrEnum):
-    simplify = "simplify"
-    convex = "convex"
-    none = "none"
+    simplify = auto()
+    convex = auto()
+    none = auto()
 
 
 def geojson_to_wkt(json: Dict[str, Any]) -> List[str]:
