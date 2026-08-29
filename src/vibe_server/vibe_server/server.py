@@ -885,24 +885,16 @@ class TerravibesAPI(FastAPI):
 
 
 def build_href_handler(options: Namespace) -> HrefHandler:
-    logger = logging.getLogger(f"{__name__}.build_href_handler")
     if options.terravibes_host_assets_dir:
         return LocalHrefHandler(options.terravibes_host_assets_dir)
     else:
-        try:
-            storage_account_connection_string = instantiate(
-                DaprSecretConfig(
-                    store_name=DEFAULT_SECRET_STORE_NAME,
-                    secret_name=os.environ["BLOB_STORAGE_ACCOUNT_CONNECTION_STRING"],
-                    key_name=os.environ["BLOB_STORAGE_ACCOUNT_CONNECTION_STRING"],
-                )
+        storage_account_connection_string = instantiate(
+            DaprSecretConfig(
+                store_name=DEFAULT_SECRET_STORE_NAME,
+                secret_name=os.environ["BLOB_STORAGE_ACCOUNT_CONNECTION_STRING"],
+                key_name=os.environ["BLOB_STORAGE_ACCOUNT_CONNECTION_STRING"],
             )
-        except Exception:
-            storage_account_connection_string = ""
-            logger.exception(
-                "Failed to load blob storage account connection string from Dapr secret store. "
-                "Expect describing runs to fail due to an inability to resolve asset hrefs."
-            )
+        )
         return BlobHrefHandler(
             connection_string=storage_account_connection_string,
         )

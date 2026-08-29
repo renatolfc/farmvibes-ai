@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+from argparse import Namespace
 from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
@@ -19,13 +20,19 @@ from fastapi.testclient import TestClient
 from vibe_common.constants import CONTROL_STATUS_PUBSUB, RUNS_KEY, WORKFLOW_REQUEST_PUBSUB_TOPIC
 from vibe_common.messaging import WorkflowCancellationMessage
 from vibe_common.statestore import DEFAULT_BULK_PARALLELISM, StateStore, StateStoreConflictError
+from vibe_common.tokens import BlobTokenManagerConnectionString
 from vibe_core.data.core_types import InnerIOType
 from vibe_core.data.utils import StacConverter, deserialize_stac
 from vibe_core.datamodel import RunConfig, RunConfigInput, RunDetails, RunStatus
 from vibe_core.security import API_TOKEN_ENV_VAR, REDACTED_VALUE
 from vibe_server.href_handler import BlobHrefHandler, LocalHrefHandler
 from vibe_server.orchestrator import Orchestrator
-from vibe_server.server import TerravibesAPI, TerravibesProvider, require_api_token
+from vibe_server.server import (
+    TerravibesAPI,
+    TerravibesProvider,
+    build_href_handler,
+    require_api_token,
+)
 from vibe_server.workflow.input_handler import build_args_for_workflow
 from vibe_server.workflow.workflow import load_workflow_by_name
 
@@ -44,6 +51,44 @@ def request_client_with_blob():
     terravibes_app = TerravibesAPI(href_handler)
     client = TestClient(terravibes_app.versioned_wrapper)
     yield client
+
+
+def test_build_href_handler_propagates_secret_store_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("BLOB_STORAGE_ACCOUNT_CONNECTION_STRING", "storage-secret")
+
+    with patch("vibe_server.server.instantiate", side_effect=RuntimeError("dapr unavailable")):
+        with pytest.raises(RuntimeError, match="dapr unavailable"):
+            build_href_handler(Namespace(terravibes_host_assets_dir=""))
+
+
+def test_build_href_handler_can_be_rebuilt_after_secret_store_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("BLOB_STORAGE_ACCOUNT_CONNECTION_STRING", "storage-secret")
+
+    with patch(
+        "vibe_server.server.instantiate",
+        side_effect=[RuntimeError("dapr unavailable"), "recovered-connection-string"],
+    ) as instantiate_mock:
+        with pytest.raises(RuntimeError, match="dapr unavailable"):
+            build_href_handler(Namespace(terravibes_host_assets_dir=""))
+        handler = build_href_handler(Namespace(terravibes_host_assets_dir=""))
+
+    assert isinstance(handler, BlobHrefHandler)
+    assert isinstance(handler.manager, BlobTokenManagerConnectionString)
+    assert handler.manager.connection_string == "recovered-connection-string"
+    assert instantiate_mock.call_count == 2
+
+
+def test_build_href_handler_propagates_missing_secret_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("BLOB_STORAGE_ACCOUNT_CONNECTION_STRING", raising=False)
+
+    with pytest.raises(KeyError, match="BLOB_STORAGE_ACCOUNT_CONNECTION_STRING"):
+        build_href_handler(Namespace(terravibes_host_assets_dir=""))
 
 
 def test_list_workflows(request_client: requests.Session):
